@@ -243,6 +243,8 @@ html,body{height:100%;overflow:hidden}
 .quota-row .q-name{color:var(--head);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-row b{font-family:"Space Grotesk";color:var(--head);font-size:13px}.quota-row .bar{margin:0}
 .quota-row.ok .bar i{background:var(--ok)}.quota-row.part .bar i{background:var(--warn)}.quota-row.none b{color:var(--danger)}html[data-theme="light"] .bar{background:rgba(16,24,40,.08)}
 .log-pre{margin:0;padding:10px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(0,0,0,.18);color:var(--head);font-size:11.5px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}html[data-theme="light"] .log-pre{background:rgba(255,255,255,.7)}
+/* v1.12: navigasi bawah Super Admin 8 menu */
+@container horizon (max-width:679px){.bottom-nav .nav-item p{font-size:8.5px}.bottom-nav .nav-item svg{width:18px;height:18px}}
 </style>
 <style>
 /* Logo Horizon (dibuat otomatis dari PNG di root horizon/: pangkas margin transparan -> perkecil -> base64). Jangan diedit manual. */
@@ -399,7 +401,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   const NAV_BY_ROLE = {
     PersonilRekanan: ['home', 'temuan', 'heatmap'], Mandor: ['home', 'temuan', 'heatmap', 'checklist', 'laporan'],
     KaryawanOrganik: ['home', 'temuan', 'heatmap', 'spot', 'checklist', 'leaderboard', 'laporan'], Admin: ['home', 'temuan', 'heatmap', 'spot', 'leaderboard', 'laporan', 'admin'], Manajemen: ['home', 'temuan', 'heatmap', 'laporan'],
-    SuperAdmin: ['home', 'temuan', 'heatmap', 'spot', 'leaderboard', 'laporan', 'admin'],   // v1.5: Admin & SuperAdmin juga bisa spot-check; v1.6: Leaderboard menu sendiri; v1.7: Heatmap menu sendiri (semua role); v1.7.1: Leaderboard hanya Organik/Admin/SuperAdmin
+    SuperAdmin: ['home', 'temuan', 'heatmap', 'spot', 'checklist', 'leaderboard', 'laporan', 'admin'],   // v1.12: + verifikasi checklist   // v1.5: Admin & SuperAdmin juga bisa spot-check; v1.6: Leaderboard menu sendiri; v1.7: Heatmap menu sendiri (semua role); v1.7.1: Leaderboard hanya Organik/Admin/SuperAdmin
   };
   const NAV_LABEL = { home: 'Beranda', temuan: 'Temuan', checklist: 'Checklist', spot: 'Spot-Check', laporan: 'Laporan', admin: 'Admin', leaderboard: 'Leaderboard', heatmap: 'Heatmap' };
 
@@ -445,7 +447,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   }
   async function api(action, payload, opt) {
     const body = Object.assign({ action, token: S.token }, payload || {});
-    if (S.boot && S.boot.isGlobal && body.pabrik_id === undefined) body.pabrik_id = S.scope;   // role global: kirim lingkup aktif
+    if (S.boot && S.boot.isMulti && body.pabrik_id === undefined) body.pabrik_id = S.scope;   // role global / multi-lingkup: kirim lingkup aktif
     if (!navigator.onLine && idb.db && WRITE_ACTIONS.includes(action)) { await idb.add({ body, t: Date.now() }); toast('Offline: disimpan di antrean, dikirim otomatis nanti'); return { queued: true }; }
     const j = await callServer(body);
     if (!j.ok) { if (/login/i.test(j.error) && !(opt && opt.silent)) logout(); throw new Error(j.error); }
@@ -684,14 +686,17 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     if (S.user.mustChange) openAccount(true); }   // v1.10: password default wajib diganti
   const roleLabel = r => ({ PersonilRekanan: 'Personil Rekanan', Mandor: 'Mandor/Koordinator', KaryawanOrganik: 'Karyawan Organik', Admin: 'Admin Pabrik', Manajemen: 'Manajemen', SuperAdmin: 'Super Admin' }[r] || r);
   /** Pemilih lingkup di header untuk role global (Manajemen/SuperAdmin): "Semua lingkup" atau satu pabrik. */
-  function buildScope() { const old = $('#scope-sel'); if (old) old.remove(); if (!S.boot.isGlobal) return;
-    const s = el('select', { id: 'scope-sel', class: 'scope-sel', title: 'Lingkup' }, el('option', { value: 'ALL' }, 'Semua lingkup'), ...S.boot.pabrik.map(p => el('option', { value: p.id }, p.nama)));
-    s.value = S.boot.pabrik.some(p => p.id === S.scope) ? S.scope : 'ALL'; S.scope = s.value;
+  /** Daftar pabrik yang boleh dilihat user ini (v1.12: role global → semua; multi-lingkup → miliknya). */
+  const myPabriks = () => S.boot.pabrikList === 'ALL' ? S.boot.pabrik : S.boot.pabrik.filter(p => (S.boot.pabrikList || []).indexOf(p.id) !== -1);
+  const pabNames = id => id === 'ALL' ? 'Semua lingkup' : String(id || '').split(',').filter(Boolean).map(x => (S.boot.pabrik.find(p => p.id === x) || {}).nama || x).join(', ');
+  function buildScope() { const old = $('#scope-sel'); if (old) old.remove(); if (!S.boot.isMulti) return;
+    const s = el('select', { id: 'scope-sel', class: 'scope-sel', title: 'Lingkup' }, el('option', { value: 'ALL' }, S.boot.isGlobal ? 'Semua lingkup' : 'Semua lingkup saya'), ...myPabriks().map(p => el('option', { value: p.id }, p.nama)));
+    s.value = myPabriks().some(p => p.id === S.scope) ? S.scope : 'ALL'; S.scope = s.value;
     s.addEventListener('change', async () => { S.scope = s.value; store.set('hz_scope', S.scope); try { S.boot = await api('bootstrap', { pabrik_id: S.scope }); } catch (e) { return toast(e.message, true); } go(S.view); });
     $('.hdr-actions').prepend(s); }
-  const scopeName = () => { const id = S.boot.isGlobal ? S.scope : S.user.pabrik_id; return id === 'ALL' ? 'Semua lingkup' : ((S.boot.pabrik.find(p => p.id === id) || {}).nama || id); };
+  const scopeName = () => { if (!S.boot.isMulti) return pabNames(S.user.pabrik_id); return S.scope === 'ALL' ? (S.boot.isGlobal ? 'Semua lingkup' : 'Semua lingkup saya') : pabNames(S.scope); };
   /** Panel admin yang butuh satu pabrik: role global harus memilih lingkup dulu. */
-  const needScope = b => { if (S.boot.isGlobal && S.scope === 'ALL') { b.replaceChildren(el('p', { class: 'empty' }, 'Pilih satu lingkup pabrik di menu kanan atas untuk mengelola data ini.')); return true; } return false; };
+  const needScope = b => { if (S.boot.isMulti && S.scope === 'ALL') { b.replaceChildren(el('p', { class: 'empty' }, 'Pilih satu lingkup pabrik di menu kanan atas untuk mengelola data ini.')); return true; } return false; };
   /** Pertanyaan yang berlaku untuk zona tertentu: "Semua zona" (ALL) + khusus zona itu (PRD 7.10.2b). */
   /** v1.7.1: zona_id pertanyaan = 'ALL' atau daftar id zona dipisah koma ("z1,z3") — satu pertanyaan bisa dipakai banyak zona. */
   const qZones = q => { const s = String(q.zona_id == null ? 'ALL' : q.zona_id).trim(); return !s || s === 'ALL' ? 'ALL' : s === 'NONE' ? [] : s.split(',').map(x => x.trim()).filter(Boolean); };   // 'NONE' = belum dipakai zona mana pun
@@ -722,7 +727,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   const NAV_SHORT = { spot: 'Spot', leaderboard: 'Ranking' };   // label ringkas untuk navigasi bawah HP (hingga 7 menu)
   function buildNav() { const items = NAV_BY_ROLE[S.user.role] || ['home']; const mk = short => items.map(v => el('div', { class: 'nav-item', 'data-view': v, onclick: () => go(v), html: ICON[v] }, el('p', {}, (short && NAV_SHORT[v]) || NAV_LABEL[v])));
     // blok identitas di panel navigasi (tablet/PC): logo sekunder + nama + role (+ pabrik)
-    const pab = S.user.pabrik_id === 'ALL' ? '' : ' · ' + ((S.boot.pabrik.find(p => p.id === S.user.pabrik_id) || {}).nama || S.user.pabrik_id);
+    const pab = S.user.pabrik_id === 'ALL' ? '' : ' · ' + pabNames(S.user.pabrik_id);
     const who = el('div', { class: 'nav-user', title: S.user.nama + ' · ' + roleLabel(S.user.role) + ' — tap untuk akun & ganti password', onclick: openAccount }, el('span', { class: 'logo-mark' }), el('div', { class: 'nav-user-txt' }, el('b', {}, S.user.nama), el('span', {}, roleLabel(S.user.role) + pab)));
     // v1.7: logo Departemen Operasi Pabrik IIIA di bagian bawah panel navigasi (versi putih di mode gelap, berwarna di mode terang — Logo.html)
     const foot = el('div', { class: 'nav-foot', title: 'Departemen Operasi Pabrik III A' }, el('span', { class: 'logo-op', role: 'img', 'aria-label': 'Operasi 3A' }));
@@ -745,7 +750,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   // ================= BERANDA
   VIEWS.home = async (c) => {
     const d = await api('dashboard', {}); const g = d.grafik || {};
-    const pab = d.pabrik_id === 'ALL' ? 'Semua lingkup' : ((S.boot.pabrik.find(p => p.id === d.pabrik_id) || {}).nama || nz(d.pabrik_id, '-'));
+    const pab = d.pabrik_id === 'ALL' ? 'Semua lingkup' : String(d.pabrik_id || '').indexOf(',') !== -1 ? 'Semua lingkup saya' : pabNames(nz(d.pabrik_id, '-'));
     // v1.7: semua angka lewat nz() — nilai null/NaN dari server tampil "–", bukan teks "null"
     const hqiCards = (d.hqi || []).map(h => { const v = Number(nz(h.hqi_final, 0)); const ring = el('div', { class: 'ring', style: 'background:conic-gradient(var(--aqua) 0turn, var(--signal) ' + (v / 100) + 'turn, rgba(255,255,255,.12) 0turn)' }, el('div', { class: 'ring-value' }, el('b', {}, nz(h.hqi_final)), el('span', {}, 'HQI')));
       return el('div', { class: 'card score-card' }, ring, el('div', {}, el('h3', {}, nz(h.vendor, '-') + ' · ' + nz(h.grade, '-')), el('p', { class: 'hint' }, 'Periode ' + d.periode.mulai + ' s/d ' + d.periode.selesai + (h.catatan ? ' · ' + h.catatan : '')),
@@ -980,9 +985,19 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
 
   // ================= CHECKLIST HARIAN (Mandor) / VERIFIKASI (Organik)
   VIEWS.checklist = async (c) => {
-    if (S.user.role === 'KaryawanOrganik' || S.user.role === 'Admin') return verificationQueue(c);
-    const done = await api('myChecklistsToday', {}); const zones = S.boot.zones;
-    const zsel = sel(zones.map(z => ({ v: z.id, t: z.nama_area + (done.some(d => d.zona_id === z.id) ? ' (sudah diisi hari ini)' : '') })));
+    if (S.user.role === 'KaryawanOrganik' || S.user.role === 'Admin' || S.user.role === 'SuperAdmin') return verificationQueue(c);
+    // v1.12: daftar checklist vendor 7 hari terakhir → zona yang sudah diisi hari ini dikunci (server juga menolak dobel), rekap hari kerja, catatan akhir pekan
+    const dOf = iso => String(iso || '').slice(0, 10); const hist = await api('myChecklists', { hari: 7 }); const done = hist.filter(x => dOf(x.timestamp) === today()); const zones = S.boot.zones;
+    const doneZ = id => done.find(x => x.zona_id === id);
+    const zsel = sel(zones.map(z => ({ v: z.id, t: z.nama_area + (doneZ(z.id) ? ' ✓ sudah diisi hari ini' : '') })));
+    Array.from(zsel.options).forEach(o => { if (doneZ(o.value)) o.disabled = true; }); const firstOpen = zones.find(z => !doneZ(z.id)); if (firstOpen) zsel.value = firstOpen.id;
+    const wd = new Date().getDay(), weekend = wd === 0 || wd === 6;
+    const stPill = x => el('span', { class: 'pill ' + (x.status_verifikasi === 'Ditolak' ? 'Nonaktif' : x.status_verifikasi === 'Menunggu' ? 'Open' : 'ok') }, x.status_verifikasi || '-');
+    const recap = zones.map(z => ({ z, n: new Set(hist.filter(x => x.zona_id === z.id && x.status_verifikasi !== 'Ditolak').map(x => dOf(x.timestamp))).size }));
+    const todayCard = el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Checklist hari ini'), el('span', { class: 'hint' }, done.length + ' dari ' + zones.length + ' zona')),
+      weekend ? el('p', { class: 'hint warn-text' }, 'Hari ini akhir pekan — checklist tidak wajib (hari kerja Senin–Jumat) dan tidak memengaruhi kepatuhan.') : null,
+      done.length ? el('div', { class: 'list' }, ...done.map(x => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, zonaName(x.zona_id) + ' · skor ' + nz(x.skor)), el('span', {}, fmtDT(x.timestamp) + ' · oleh ' + x.oleh + (x.is_anomali === 'Y' ? ' · anomali' : ''))), stPill(x)))) : el('p', { class: 'hint' }, 'Belum ada zona yang diisi hari ini.'),
+      el('p', { class: 'hint' }, '7 hari terakhir: ' + recap.map(r => r.z.nama_area + ' ' + r.n + ' hari').join(' · ')));
     // v1.6: Mandor mengisi jumlah personil rekanan per zona (dipakai statistik Beranda & label zona)
     const perInputs = {}; const perCard = el('div', { class: 'card form' }, el('h3', {}, 'Personil rekanan per zona'), el('p', { class: 'hint' }, 'Isi jumlah personil yang bertugas di tiap zona Anda (bisa diubah kapan saja).'),
       ...zones.map(z => { perInputs[z.id] = el('input', { type: 'number', min: 0, value: Number(z.jumlah_personil) || 0 }); return fld(z.nama_area, perInputs[z.id]); }),
@@ -991,11 +1006,12 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const btn = el('button', { class: 'btn primary' }, 'Kirim checklist');
     const renderItems = () => { const qs = qFor(zsel.value, 'ChecklistHarian'); items.replaceChildren(...(qs.length ? qs.map(q => triItem(q, drain.checked)) : [el('p', { class: 'empty' }, 'Belum ada pertanyaan untuk zona ini — hubungi Admin')])); };
     drain.addEventListener('change', renderItems); zsel.addEventListener('change', renderItems); renderItems();
-    c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Checklist Harian'), el('p', {}, today() + ' · satu kali per zona per hari')),
+    c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Checklist Harian'), el('p', {}, today() + ' · satu kali per zona per hari kerja (Senin–Jumat)')), todayCard,
       el('div', { class: 'card form' }, fld('Zona', zsel), zoneMapPicker(zsel, zones), el('label', { class: 'toggle' }, drain, 'Sedang ada aktivitas drain di zona ini'), items),   // v1.7.2: peta zona
       el('div', { class: 'section-head' }, el('h3', {}, 'Bukti foto (langsung dari kamera, ber-watermark)')), el('div', { class: 'camera-row' }, f1, f2), btn,
       el('p', { class: 'hint', style: 'text-align:center' }, 'Setelah dikirim: Menunggu Verifikasi Karyawan Organik (batas hari ini)'), zones.length ? perCard : null);
-    btn.addEventListener('click', async () => { const answers = readTri(items); if (!answers) return toast('Semua item harus dijawab', true); if (!f1.dataset.value) return toast('Foto 1 wajib', true); btn.disabled = true;
+    if (zones.length && !firstOpen) { btn.disabled = true; btn.textContent = 'Semua zona sudah diisi hari ini'; }
+    btn.addEventListener('click', async () => { if (doneZ(zsel.value)) return toast('Zona ini sudah diisi hari ini — pilih zona lain', true); const answers = readTri(items); if (!answers) return toast('Semua item harus dijawab', true); if (!f1.dataset.value) return toast('Foto 1 wajib', true); btn.disabled = true;
       try { await api('submitDailyChecklist', { zona_id: zsel.value, items: answers, sedang_drain: drain.checked, foto1: f1.dataset.value, foto2: f2.dataset.value || '' }); toast('Checklist terkirim'); go('checklist'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
   };
   function triItem(q, drainOn) { const na = drainOn && q.terkait_drain === 'Y'; const tri = el('div', { class: 'tri' }, ...['Ya', 'Cukup', 'Tidak'].map(v => el('button', { type: 'button', disabled: na ? '' : null, onclick: e => { tri.querySelectorAll('button').forEach(b => b.classList.remove('active')); e.target.classList.add('active'); tri.dataset.v = v; } }, v)));
@@ -1006,14 +1022,14 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Verifikasi Checklist'), el('p', {}, rows.length + ' menunggu · wajib hari yang sama')), rows.length ? list : el('p', { class: 'empty' }, 'Tidak ada antrean'));
     rows.forEach(r => { const items = JSON.parse(r.item_checklist || '[]'); const card = el('div', { class: 'card form' }, el('h3', {}, zonaName(r.zona_id) + ' · skor ' + r.skor), el('p', { class: 'hint' }, fmtDT(r.timestamp) + ' · batas ' + fmtDT(r.deadline_verifikasi) + (r.is_anomali === 'Y' ? ' · ANOMALI' : '')),
       el('div', { class: 'hint' }, items.map(i => i.item + ': ' + i.hasil).join(' · ')), el('div', { class: 'camera-row', id: 'ph-' + r.id }),
-      S.user.role === 'KaryawanOrganik' ? el('div', { class: 'form-row' }, el('button', { class: 'btn primary', onclick: () => verify(r, true) }, 'Terverifikasi'), el('button', { class: 'btn danger', onclick: () => verify(r, false) }, 'Tolak')) : null);
+      (S.user.role === 'KaryawanOrganik' || S.user.role === 'SuperAdmin') ? el('div', { class: 'form-row' }, el('button', { class: 'btn primary', onclick: () => verify(r, true) }, 'Terverifikasi'), el('button', { class: 'btn danger', onclick: () => verify(r, false) }, 'Tolak')) : null);
       list.append(card); [r.foto1, r.foto2].filter(Boolean).forEach(id => photoImg(id).then(i => { if (i.src) { i.style.cssText = 'width:48%;border-radius:12px'; card.querySelector('#ph-' + r.id).append(i); } })); });
     async function verify(r, ok) { try { await api('verifyDailyChecklist', { id: r.id, setujui: ok }); toast(ok ? 'Terverifikasi' : 'Ditolak'); go('checklist'); } catch (e) { toast(e.message, true); } }
   }
 
   // ================= SPOT-CHECK (Karyawan Organik)
   VIEWS.spot = async (c) => {
-    const pabOf = z => S.boot.isGlobal && S.scope === 'ALL' ? ' · ' + ((S.boot.pabrik.find(p => p.id === z.pabrik_id) || {}).nama || z.pabrik_id) : '';   // v1.7.2: "Semua lingkup" → sebut pabriknya
+    const pabOf = z => S.boot.isMulti && S.scope === 'ALL' ? ' · ' + ((S.boot.pabrik.find(p => p.id === z.pabrik_id) || {}).nama || z.pabrik_id) : '';   // v1.7.2: "Semua lingkup" → sebut pabriknya
     const zsel = sel(S.boot.zones.map(z => ({ v: z.id, t: z.nama_area + ' · ' + vendorName(z.vendor_id) + pabOf(z) }))); const drain = el('input', { type: 'checkbox' }); const items = el('div'); const f = cameraSlot('Foto titik (kamera)');
     const renderItems = () => { const qs = qFor(zsel.value, 'SpotCheck'); items.replaceChildren(...(qs.length ? qs.map(q => triItem(q, drain.checked)) : [el('p', { class: 'empty' }, 'Belum ada pertanyaan untuk zona ini — hubungi Admin')])); };
     drain.addEventListener('change', renderItems); zsel.addEventListener('change', renderItems); renderItems();
@@ -1146,7 +1162,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     win.document.open(); win.document.write(html); win.document.close(); status(''); setTimeout(() => { try { win.focus(); win.print(); } catch (e) { } }, 800); }
   VIEWS.laporan = async (c) => {
     const s = el('input', { type: 'date', value: monthStart() }), e = el('input', { type: 'date', value: today() });
-    const pab = sel(S.boot.pabrik.map(p => ({ v: p.id, t: p.nama }))); if (!S.boot.isGlobal) { pab.value = S.user.pabrik_id; pab.disabled = true; } else if (S.scope !== 'ALL') pab.value = S.scope;
+    const pab = sel(myPabriks().map(p => ({ v: p.id, t: p.nama }))); if (!S.boot.isMulti) { pab.value = S.user.pabrik_id; pab.disabled = true; } else if (S.scope !== 'ALL') pab.value = S.scope;   // v1.12: multi-lingkup memilih di antara lingkupnya
     const out = el('div', { class: 'form' }); const btn = el('button', { class: 'btn primary' }, 'Tampilkan');
     c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Laporan'), el('p', {}, 'Skor HQI & temuan before-after per periode · bisa diekspor ke Excel atau dicetak/PDF')), el('div', { class: 'card form' }, el('div', { class: 'form-row' }, fld('Dari', s), fld('Sampai', e)), fld('Pabrik', pab), btn), out);
     btn.addEventListener('click', async () => { out.replaceChildren(el('p', { class: 'empty' }, 'Menghitung...')); try { const r = await api('report', { periode_mulai: s.value, periode_selesai: e.value, pabrik_id: pab.value });
@@ -1168,7 +1184,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const T = { zona: adminZona, pertanyaan: adminPertanyaan, user: adminUser, vendor: adminVendor, jadwal: adminJadwal, bobot: adminBobot, review: adminReview, log: adminLog };
     if (S.user.role === 'SuperAdmin') { T.lingkup = adminLingkup; T.arsip = adminArsip; }   // v1.11: Arsip
     const LABEL = { zona: 'Zona', pertanyaan: 'Pertanyaan', user: 'User', vendor: 'Vendor', jadwal: 'Jadwal', bobot: 'Bobot', review: 'Review', log: 'Log', lingkup: 'Lingkup', arsip: 'Arsip' };
-    const first = (arg && arg.tab && T[arg.tab]) ? arg.tab : (S.user.role === 'SuperAdmin' && S.scope === 'ALL' ? 'lingkup' : 'zona');
+    const first = (arg && arg.tab && T[arg.tab]) ? arg.tab : (S.user.role === 'SuperAdmin' && S.scope === 'ALL' ? 'lingkup' : (S.boot.isMulti && S.scope === 'ALL' ? 'user' : 'zona'));
     Object.keys(T).forEach(k => tabs.append(el('button', { class: k === first ? 'active' : '', onclick: e => { tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === e.target)); T[k](body); } }, LABEL[k])));
     c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Panel Admin'), el('p', {}, 'Lingkup: ' + scopeName() + (S.user.role === 'SuperAdmin' ? ' · Super Admin (seluruh lingkup)' : ''))), tabs, body); T[first](body);
   };
@@ -1275,9 +1291,15 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const rows = await api('listUsers', {}); const nama = el('input', { placeholder: 'Nama' }), idl = el('input', { placeholder: 'ID login (huruf/angka, tanpa spasi)' }), pin = el('input', { placeholder: 'Password (min. 6 karakter; default 123456; kosongkan = tidak diubah)', autocomplete: 'off' }); let editing = null;
     const role = sel(superA ? S.boot.roles.map(r => ({ v: r, t: roleLabel(r) })) : ['Mandor', 'PersonilRekanan']);
     const pab = sel(S.boot.pabrik.map(p => ({ v: p.id, t: p.nama }))); if (superA && S.scope !== 'ALL') pab.value = S.scope;
-    const vend = sel([]); const fillVend = () => { const pid = superA ? pab.value : S.user.pabrik_id; vend.replaceChildren(...S.boot.vendors.filter(v => v.pabrik_id === pid).map(v => el('option', { value: v.id }, v.nama))); }; fillVend(); pab.addEventListener('change', fillVend);
-    const vendField = fld('Vendor', vend), pabField = fld('Pabrik / lingkup', pab); const isGlobalRole = r => r === 'Manajemen' || r === 'SuperAdmin';
-    const syncFields = () => { vendField.hidden = !(role.value === 'Mandor' || role.value === 'PersonilRekanan'); pabField.hidden = !superA || isGlobalRole(role.value); }; role.addEventListener('change', syncFields); syncFields();
+    // v1.12: Karyawan Organik & Admin boleh punya BANYAK lingkup (kotak centang); Mandor/Personil satu lingkup (ikut vendornya); role global otomatis semua
+    const multiRole = r => r === 'KaryawanOrganik' || r === 'Admin'; const pabChecks = {};
+    const pabMulti = el('div', { class: 'pick-list' }, ...S.boot.pabrik.map(p => { pabChecks[p.id] = el('input', { type: 'checkbox' }); return el('label', { class: 'check-item pick' }, pabChecks[p.id], el('span', {}, p.nama)); }));
+    const curPabrik = () => S.boot.isMulti ? S.scope : S.user.pabrik_id;
+    const vend = sel([]); const fillVend = () => { const pid = superA ? pab.value : curPabrik(); vend.replaceChildren(...S.boot.vendors.filter(v => v.pabrik_id === pid).map(v => el('option', { value: v.id }, v.nama))); }; fillVend(); pab.addEventListener('change', fillVend);
+    const vendField = fld('Vendor', vend), pabField = fld('Pabrik / lingkup', pab), pabMultiField = el('div', { class: 'field' }, el('span', {}, 'Lingkup (boleh lebih dari satu)'), pabMulti); const isGlobalRole = r => r === 'Manajemen' || r === 'SuperAdmin';
+    const syncFields = () => { const r = role.value; vendField.hidden = !(r === 'Mandor' || r === 'PersonilRekanan'); pabField.hidden = !superA || isGlobalRole(r) || multiRole(r); pabMultiField.hidden = !superA || !multiRole(r); }; role.addEventListener('change', syncFields); syncFields();
+    const setPabs = v => { const ids = String(v || '').split(',').map(x => x.trim()); Object.keys(pabChecks).forEach(id => pabChecks[id].checked = ids.indexOf(id) !== -1); if (ids[0] && S.boot.pabrik.some(p => p.id === ids[0])) pab.value = ids[0]; };
+    const getPab = () => multiRole(role.value) ? Object.keys(pabChecks).filter(id => pabChecks[id].checked).join(',') : pab.value;
     const title = el('h3', {}, superA ? 'Manajemen User (semua role & lingkup)' : 'Manajemen User (Mandor & Personil Rekanan)');
     // v1.10: pencarian user (nama, ID login, role, lingkup, vendor, status) — menyaring baris di klien
     const qIn = el('input', { type: 'search', placeholder: 'Cari nama, ID login, role, lingkup, vendor…', autocomplete: 'off' }); const qInfo = el('span', { class: 'hint' });
@@ -1302,22 +1324,22 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const impCard = el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Impor user kolektif (Excel/CSV)'), el('a', { class: 'link', onclick: () => downloadUserTemplate().catch(e => toast(e.message, true)) }, 'Unduh template Excel')),
       el('p', { class: 'hint' }, 'Kolom: nama, id_login (opsional), role, pabrik_id, vendor, password (opsional; kosong = 123456). ' + (superA ? 'Super Admin boleh semua role & lingkup.' : 'Admin lingkup: hanya Mandor & Personil Rekanan di ' + scopeName() + ' (kolom pabrik_id diabaikan).') + ' Maks. 200 baris per berkas.'),
       el('div', { class: 'form-row' }, fld('Berkas .xlsx / .csv', fileIn), impBtn), prev);
-    const save = el('button', { class: 'btn primary' }, 'Simpan user'); const reset = el('a', { class: 'link', onclick: () => { editing = null; nama.value = idl.value = pin.value = ''; idl.disabled = false; syncFields(); title.textContent = 'User baru'; } }, 'User baru');
-    const pabName = id => id === 'ALL' ? 'Semua lingkup' : ((S.boot.pabrik.find(p => p.id === id) || {}).nama || id);
+    const save = el('button', { class: 'btn primary' }, 'Simpan user'); const reset = el('a', { class: 'link', onclick: () => { editing = null; nama.value = idl.value = pin.value = ''; idl.disabled = false; setPabs(S.scope !== 'ALL' ? S.scope : ''); syncFields(); title.textContent = 'User baru'; } }, 'User baru');
+    const pabName = pabNames;   // v1.12: daftar lingkup dipisah koma → nama-nama
     // v1.7.3: reset password lewat dialog (antisipasi user lupa/salah password) — server upsertUser → hashPin_(checkPassword_)
     const resetPw = u => { const p1 = el('input', { type: 'password', placeholder: 'Password baru (min. 6 karakter)', autocomplete: 'new-password' }), p2 = el('input', { type: 'password', placeholder: 'Ulangi', autocomplete: 'new-password' });
       const ok = el('button', { class: 'btn primary', onclick: async () => { if (p1.value.length < 6) return toast('Password minimal 6 karakter', true); if (p1.value !== p2.value) return toast('Ulangan password tidak sama', true); ok.disabled = true;
         try { await api('upsertUser', { user: { id: u.id, role: u.role, pabrik_id: u.pabrik_id, vendor_id: u.vendor_id, pin: p1.value } }); closeModal(); toast('Password ' + u.nama + ' direset — sampaikan password baru ke yang bersangkutan'); } catch (err) { toast(err.message, true); ok.disabled = false; } } }, 'Simpan password baru');
       modal(el('div', { class: 'form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Reset password: ' + u.nama), el('a', { class: 'link', onclick: closeModal }, 'Batal')), el('p', { class: 'hint' }, 'ID login ' + u.id + ' · ' + roleLabel(u.role) + '. Password lama tidak diperlukan; user dapat menggantinya lagi lewat "Akun & password".'), fld('Password baru', p1), fld('Ulangi password baru', p2), ok)); };
-    b.replaceChildren(el('div', { class: 'card form' }, el('div', { class: 'section-head' }, title, reset), el('div', { class: 'form-row' }, fld('Nama', nama), fld('ID login', idl)), el('div', { class: 'form-row' }, fld('Role', role), pabField), el('div', { class: 'form-row' }, vendField, fld('Password (reset)', pin)), save), impCard, userSearch,
+    b.replaceChildren(el('div', { class: 'card form' }, el('div', { class: 'section-head' }, title, reset), el('div', { class: 'form-row' }, fld('Nama', nama), fld('ID login', idl)), el('div', { class: 'form-row' }, fld('Role', role), pabField), pabMultiField, el('div', { class: 'form-row' }, vendField, fld('Password (reset)', pin)), save), impCard, userSearch,
       el('div', { class: 'list' }, ...rows.map((u, ui) => { const aktif = u.status !== 'Nonaktif'; const dup = rows.findIndex(x => String(x.id) === String(u.id)) !== ui;   /* v1.9.3: baris ganda */
-        const edit = () => { editing = u; nama.value = u.nama; idl.value = u.id; idl.disabled = true; role.value = u.role; if (superA && !isGlobalRole(u.role)) { pab.value = u.pabrik_id; fillVend(); } vend.value = u.vendor_id; pin.value = ''; syncFields(); title.textContent = 'Edit user: ' + u.nama; nama.scrollIntoView({ behavior: 'smooth', block: 'center' }); toast('Ubah data lalu "Simpan user"; isi kolom Password hanya bila ingin mereset'); };
+        const edit = () => { editing = u; nama.value = u.nama; idl.value = u.id; idl.disabled = true; role.value = u.role; if (superA && !isGlobalRole(u.role)) { setPabs(u.pabrik_id); fillVend(); } vend.value = u.vendor_id; pin.value = ''; syncFields(); title.textContent = 'Edit user: ' + u.nama; nama.scrollIntoView({ behavior: 'smooth', block: 'center' }); toast('Ubah data lalu "Simpan user"; isi kolom Password hanya bila ingin mereset'); };
         return el('div', { class: 'card row-card user-row', onclick: edit },
           el('div', { class: 'info' }, el('b', {}, u.nama + ' (' + u.id + ')'), el('span', {}, roleLabel(u.role) + ' · ' + pabName(u.pabrik_id) + (u.vendor_id ? ' · ' + vendorName(u.vendor_id) : ''))), el('span', { class: 'pill ' + (dup ? 'Open' : aktif ? 'ok' : 'Nonaktif') }, dup ? 'DUPLIKAT' : aktif ? 'Aktif' : 'Nonaktif'),
           el('div', { class: 'row-actions' }, dup ? el('button', { class: 'btn danger sm', onclick: async e => { e.stopPropagation(); if (!await confirmModal('Hapus baris ganda untuk ID "' + u.id + '"?\nBaris pertama dipertahankan; baris ganda dihapus permanen dari tab Users.')) return; try { const r = await api('removeDuplicateUser', { id: u.id }); toast(r.dihapus + ' baris ganda dihapus'); go('admin', { tab: 'user' }); } catch (err) { toast(err.message, true); } } }, 'Hapus duplikat') : null, el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); edit(); } }, 'Edit'), el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); resetPw(u); } }, 'Reset password'),
             u.id !== S.user.id ? el('button', { class: 'btn sm', onclick: async e => { e.stopPropagation(); try { await api('upsertUser', { user: { id: u.id, role: u.role, pabrik_id: u.pabrik_id, vendor_id: u.vendor_id, status: aktif ? 'Nonaktif' : 'Aktif' } }); toast(aktif ? 'User dinonaktifkan' : 'User diaktifkan'); go('admin', { tab: 'user' }); } catch (err) { toast(err.message, true); } } }, aktif ? 'Nonaktifkan' : 'Aktifkan') : null)); })));
     applySearch();
-    save.addEventListener('click', async () => { if (!nama.value) return toast('Nama wajib', true); if (save.disabled) return; save.disabled = true; setTimeout(() => { save.disabled = false; }, 8000); /* v1.9.3: cegah klik ganda → user ganda */ try { const r = await api('upsertUser', { user: { id: editing ? editing.id : undefined, id_login: idl.value, nama: nama.value, role: role.value, pabrik_id: superA ? pab.value : undefined, vendor_id: vend.value, pin: pin.value } }); toast((editing ? 'User diperbarui' : 'User dibuat') + ' · ID login: ' + r.id + (!editing && !pin.value ? ' · password 123456' : '')); /* v1.9: ID login final ditampilkan (huruf kecil, spasi → "-") */ S.boot = await api('bootstrap'); go('admin', { tab: 'user' }); } catch (e) { toast(e.message, true); } });
+    save.addEventListener('click', async () => { if (!nama.value) return toast('Nama wajib', true); if (superA && multiRole(role.value) && !getPab()) return toast('Pilih minimal satu lingkup', true); if (save.disabled) return; save.disabled = true; setTimeout(() => { save.disabled = false; }, 8000); /* v1.9.3: cegah klik ganda → user ganda */ try { const r = await api('upsertUser', { user: { id: editing ? editing.id : undefined, id_login: idl.value, nama: nama.value, role: role.value, pabrik_id: superA ? getPab() : undefined, vendor_id: vend.value, pin: pin.value } }); toast((editing ? 'User diperbarui' : 'User dibuat') + ' · ID login: ' + r.id + (!editing && !pin.value ? ' · password 123456' : '')); /* v1.9: ID login final ditampilkan (huruf kecil, spasi → "-") */ S.boot = await api('bootstrap'); go('admin', { tab: 'user' }); } catch (e) { toast(e.message, true); } });
   }
   async function adminVendor(b) { if (needScope(b)) return; const nama = el('input', { placeholder: 'Nama rekanan/kontrak' }); const save = el('button', { class: 'btn primary' }, 'Tambah vendor');
     b.replaceChildren(el('div', { class: 'card form' }, el('h3', {}, 'Vendor / Rekanan'), fld('Nama', nama), save), el('div', { class: 'list' }, ...S.boot.vendors.map(v => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, v.nama), el('span', {}, v.id)), el('span', { class: 'pill ok' }, v.status)))));
@@ -1382,7 +1404,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   async function downloadUserTemplate() { await loadXLSX(); const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([IMPORT_COLS, ['Budi Santoso', 'budi.santoso', 'PersonilRekanan', 'ZA2', 'PT Contoh Bersih', ''], ['Siti Aminah', '', 'Mandor', 'ZA2', 'PT Contoh Bersih', 'rahasia1'], ['Andi Wijaya', 'andi.w', 'KaryawanOrganik', 'SASU3A', '', '']]);
     ws['!cols'] = [{ wch: 26 }, { wch: 18 }, { wch: 20 }, { wch: 12 }, { wch: 28 }, { wch: 16 }]; XLSX.utils.book_append_sheet(wb, ws, 'User');
-    const ref = XLSX.utils.aoa_to_sheet([['Kolom', 'Keterangan'], ['nama', 'Wajib. Nama lengkap.'], ['id_login', 'Opsional. Huruf/angka; karakter lain jadi "-". Kosong = dibuat dari nama (Budi Santoso → budi-santoso).'], ['role', 'Wajib: PersonilRekanan / Mandor / KaryawanOrganik / Admin / Manajemen / SuperAdmin'], ['pabrik_id', 'Wajib kecuali Manajemen/SuperAdmin: ' + S.boot.pabrik.map(p => p.id + ' (' + p.nama + ')').join(', ')], ['vendor', 'Wajib untuk Mandor & PersonilRekanan: nama/ID vendor persis seperti di Admin › Vendor'], ['password', 'Opsional, min. 6 karakter. Kosong = 123456'], [], ['Vendor terdaftar (lingkup aktif)', ''], ...S.boot.vendors.map(v => [v.nama, v.id + ' · ' + v.pabrik_id]), [], ['Contoh di baris 2–4 sheet "User" boleh dihapus/diganti. Maks. 200 baris per berkas.', '']]);
+    const ref = XLSX.utils.aoa_to_sheet([['Kolom', 'Keterangan'], ['nama', 'Wajib. Nama lengkap.'], ['id_login', 'Opsional. Huruf/angka; karakter lain jadi "-". Kosong = dibuat dari nama (Budi Santoso → budi-santoso).'], ['role', 'Wajib: PersonilRekanan / Mandor / KaryawanOrganik / Admin / Manajemen / SuperAdmin'], ['pabrik_id', 'Wajib kecuali Manajemen/SuperAdmin: ' + S.boot.pabrik.map(p => p.id + ' (' + p.nama + ')').join(', ') + '. Karyawan Organik/Admin boleh beberapa lingkup dipisah koma, mis. ZA2,SASU3A'], ['vendor', 'Wajib untuk Mandor & PersonilRekanan: nama/ID vendor persis seperti di Admin › Vendor'], ['password', 'Opsional, min. 6 karakter. Kosong = 123456'], [], ['Vendor terdaftar (lingkup aktif)', ''], ...S.boot.vendors.map(v => [v.nama, v.id + ' · ' + v.pabrik_id]), [], ['Contoh di baris 2–4 sheet "User" boleh dihapus/diganti. Maks. 200 baris per berkas.', '']]);
     ref['!cols'] = [{ wch: 34 }, { wch: 90 }]; XLSX.utils.book_append_sheet(wb, ref, 'Petunjuk'); XLSX.writeFile(wb, 'template_import_user_horizon.xlsx'); }
 
   // ---------------- small helpers
