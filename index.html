@@ -245,6 +245,14 @@ html,body{height:100%;overflow:hidden}
 .log-pre{margin:0;padding:10px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(0,0,0,.18);color:var(--head);font-size:11.5px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}html[data-theme="light"] .log-pre{background:rgba(255,255,255,.7)}
 /* v1.12: navigasi bawah Super Admin 8 menu */
 @container horizon (max-width:679px){.bottom-nav .nav-item p{font-size:8.5px}.bottom-nav .nav-item svg{width:18px;height:18px}}
+/* v1.12.1: label zona yang semua temuannya sudah Close */
+.zone-label.done{border-color:#2DD4BF;color:#99F6E4}html[data-theme="light"] .zone-label.done{color:#0F766E;border-color:#14B8A6}
+/* v1.13: heatmap 3 mode — pill/label/batang skor, foto besar di popup temuan */
+.pill.ok{background:rgba(52,211,153,.18);color:var(--ok)}.pill.warn{background:rgba(251,191,36,.18);color:var(--warn)}.pill.danger{background:rgba(248,113,113,.18);color:var(--danger)}
+.zone-label.score-ok{border-color:#34D399;color:#A7F3D0}.zone-label.score-warn{border-color:#FBBF24;color:#FDE68A}.zone-label.score-danger{border-color:#F87171;color:#FECACA}
+html[data-theme="light"] .zone-label.score-ok{color:#047857}html[data-theme="light"] .zone-label.score-warn{color:#B45309}html[data-theme="light"] .zone-label.score-danger{color:#B91C1C}
+.bar i.bar-ok{background:var(--ok)}.bar i.bar-warn{background:var(--warn)}.bar i.bar-danger{background:var(--danger)}
+.ba.ba-lg{width:100%;height:170px}.heat-modes button{font-size:12.5px}
 </style>
 <style>
 /* Logo Horizon (dibuat otomatis dari PNG di root horizon/: pangkas margin transparan -> perkecil -> base64). Jangan diedit manual. */
@@ -631,8 +639,11 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       onRemove(m) { cv.remove(); m.off('moveend zoomend resize', this._draw, this); },
       _draw() { const size = map.getSize(); cv.width = size.x; cv.height = size.y; L.DomUtil.setPosition(cv, map.containerPointToLayerPoint([0, 0]));
         const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, size.x, size.y); const maxW = Math.max(1, ...points.map(p => p.w || 1));
-        points.forEach(p => { const px = map.latLngToContainerPoint([p.lat, p.lng]); const a = 0.45 + 0.5 * ((p.w || 1) / maxW);
-          const g = ctx.createRadialGradient(px.x, px.y, 0, px.x, px.y, radius); g.addColorStop(0, 'rgba(255,60,40,' + a + ')'); g.addColorStop(.5, 'rgba(255,170,0,' + (a * .55) + ')'); g.addColorStop(1, 'rgba(255,220,0,0)');
+        points.forEach(p => { const px = map.latLngToContainerPoint([p.lat, p.lng]); const a = (p.cool ? 0.3 : 0.45) + 0.5 * ((p.w || 1) / maxW);
+          // v1.12.1: p.cool (temuan Close) = biru-hijau redup; selain itu merah-oranye (belum selesai)
+          const g = ctx.createRadialGradient(px.x, px.y, 0, px.x, px.y, radius);
+          if (p.cool) { g.addColorStop(0, 'rgba(20,184,166,' + (a * .8) + ')'); g.addColorStop(.5, 'rgba(59,130,246,' + (a * .35) + ')'); g.addColorStop(1, 'rgba(59,130,246,0)'); }
+          else { g.addColorStop(0, 'rgba(255,60,40,' + a + ')'); g.addColorStop(.5, 'rgba(255,170,0,' + (a * .55) + ')'); g.addColorStop(1, 'rgba(255,220,0,0)'); }
           ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px.x, px.y, radius, 0, Math.PI * 2); ctx.fill(); }); },
     });
     const inst = new Layer(); inst.addTo(map); return inst;
@@ -778,38 +789,88 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   const stat = (v, l) => el('div', { class: 'card stat-card' }, el('b', {}, v), el('span', {}, l));
 
   // ================= HEATMAP (menu navigasi sendiri, v1.7 — semua role; PRD 7.7). Data: API.heatmap (filter periode/kategori/vendor/status)
+  // ================= HEATMAP (v1.7 menu sendiri; v1.13: 3 mode — temuan / checklist rekanan / spot-check organik; titik temuan bisa diklik)
+  const scoreCls = s => s == null ? '' : Number(s) >= 85 ? 'ok' : Number(s) >= 60 ? 'warn' : 'danger';
+  const SCORE_STYLE = { ok: { color: '#34D399', fillColor: '#10B981' }, warn: { color: '#FBBF24', fillColor: '#F59E0B' }, danger: { color: '#F87171', fillColor: '#EF4444' } };
   VIEWS.heatmap = async (c) => {
+    const MODES = [['temuan', 'Temuan'], ['checklist', 'Checklist rekanan'], ['spot', 'Spot-check organik']]; let mode = 'temuan';
+    const modeTabs = el('div', { class: 'tabs heat-modes' }, ...MODES.map(([k, t]) => el('button', { class: k === mode ? 'active' : '', 'data-mode': k, onclick: () => { mode = k; modeTabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === k)); syncFilters(); load(); } }, t)));
     const preset = sel([{ v: 'bulan', t: 'Bulan ini' }, { v: '30', t: '30 hari terakhir' }, { v: '90', t: '3 bulan terakhir' }, { v: '180', t: '6 bulan terakhir' }, { v: '365', t: '12 bulan terakhir' }]);
     const kat = sel([{ v: '', t: 'Semua kategori' }].concat((S.boot.kategoriTemuan || []).map(k => ({ v: k, t: k }))));
     const vendorSel = sel([{ v: '', t: 'Semua vendor' }].concat(S.boot.vendors.map(v => ({ v: v.id, t: v.nama }))));
-    const stSel = sel([{ v: '', t: 'Semua status' }, { v: 'Open', t: 'Belum selesai (Open + In Progress)' }, { v: 'Close', t: 'Close' }]);
+    const stSel = sel([{ v: 'Open', t: 'Belum selesai (Open + In Progress)' }, { v: '', t: 'Semua status (Close berwarna biru-hijau)' }, { v: 'Close', t: 'Close saja' }]); stSel.value = 'Open';   // v1.12.1: bawaan = belum selesai
+    const ckSel = sel([{ v: '', t: 'Semua status verifikasi' }, { v: 'Menunggu', t: 'Menunggu verifikasi' }, { v: 'Terverifikasi', t: 'Terverifikasi' }, { v: 'TerverifikasiOtomatis', t: 'Terverifikasi otomatis' }, { v: 'Ditolak', t: 'Ditolak' }]);
     const showVendor = !(S.user.role === 'Mandor' || S.user.role === 'PersonilRekanan') && S.boot.vendors.length > 1;
-    const mapBox = el('div', { class: 'map map-xl' }); const info = el('p', { class: 'hint' }); const rank = el('div', { class: 'list' }); const sum = el('div', { class: 'stat-grid stat-grid-3' });
-    c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Heatmap Temuan'), el('p', {}, scopeName() + ' · warna zona makin pekat = makin banyak temuan · titik panas berbobot prioritas')),
-      el('div', { class: 'card form' }, el('div', { class: 'form-row' }, fld('Periode', preset), fld('Kategori', kat)), el('div', { class: 'form-row' }, showVendor ? fld('Vendor', vendorSel) : null, fld('Status', stSel))),
-      sum, mapBox, info, el('div', { class: 'section-head' }, el('h3', {}, 'Zona terpanas')), rank);
+    const fKat = fld('Kategori', kat), fSt = fld('Status', stSel), fCk = fld('Status verifikasi', ckSel), fVend = showVendor ? fld('Vendor', vendorSel) : null;
+    const syncFilters = () => { fKat.hidden = mode !== 'temuan'; fSt.hidden = mode !== 'temuan'; fCk.hidden = mode !== 'checklist'; };
+    const mapBox = el('div', { class: 'map map-xl' }); const info = el('p', { class: 'hint' }); const rank = el('div', { class: 'list' }); const sum = el('div', { class: 'stat-grid stat-grid-3' }); const rankHead = el('h3', {}, 'Zona terpanas'); const sub = el('p', {}, '');
+    c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Heatmap'), sub), modeTabs,
+      el('div', { class: 'card form' }, el('div', { class: 'form-row' }, fld('Periode', preset), fKat), el('div', { class: 'form-row' }, fVend, fSt, fCk)),
+      sum, mapBox, info, el('div', { class: 'section-head' }, rankHead), rank);
+    syncFilters();
     let map = null, layers = [];
     const range = () => { const end = today(); if (preset.value === 'bulan') return { periode_mulai: end.slice(0, 8) + '01', periode_selesai: end }; const d = new Date(); d.setDate(d.getDate() - Number(preset.value)); return { periode_mulai: d.toISOString().slice(0, 10), periode_selesai: end }; };
+    const clearLayers = () => { layers.forEach(l => l.remove()); layers = []; };
+    const zonePoly = (z, style, label, cls, onClick) => { const poly = L.polygon(z.polygon.map(toLL), Object.assign({}, ZONE_STYLE, style)).addTo(map); layers.push(poly); poly.bindTooltip(esc(z.nama_area) + label, { permanent: true, direction: 'center', className: 'zone-label' + (cls ? ' ' + cls : '') }); poly.on('click', onClick); return poly; };
     const load = async () => { info.textContent = 'Memuat data…';
-      try { const r = range(); const d = await api('heatmap', Object.assign({ kategori: kat.value, vendor_id: showVendor ? vendorSel.value : '', status: stSel.value }, r));
-        const cnt = d.per_zona || {}; const nOf = id => (cnt[id] || {}).n || 0; const maxC = Math.max(1, ...Object.keys(cnt).map(k => cnt[k].n));
-        sum.replaceChildren(stat(nz(d.total, 0), 'Temuan pada periode'), stat(nz(d.open, 0), 'Belum selesai'), stat(S.boot.zones.filter(z => nOf(z.id)).length, 'Zona terdampak'));
-        if (!map) { await loadMaps(); map = newMap(mapBox); }
-        layers.forEach(l => l.remove()); layers = [];
-        S.boot.zones.forEach(z => { if (!(z.polygon || []).length) return; const n = nOf(z.id);
-          const poly = L.polygon(z.polygon.map(toLL), Object.assign({}, ZONE_STYLE, { color: n ? '#FFB020' : '#5EC8FF', fillColor: n ? '#FF7A1A' : '#3B82F6', fillOpacity: .10 + .45 * (n / maxC), weight: n ? 2.5 : 2 })).addTo(map); layers.push(poly);
-          poly.bindTooltip(esc(z.nama_area) + (n ? ' · ' + n + ' temuan' : ''), { permanent: true, direction: 'center', className: 'zone-label' + (n ? ' hot' : '') }); poly.on('click', () => openZoneSummary(z)); });   // v1.9: popup ringkasan zona
-        const pts = (d.titik || []).filter(h => h.lat !== '' && h.lat != null).map(h => ({ lat: +h.lat, lng: +h.lng, w: +h.w || 1 }));
-        if (!fitZones(map, S.boot.zones) && pts.length) map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [28, 28], maxZoom: 18 });
-        if (pts.length) layers.push(heatLayer(map, pts, 40));
-        const ranked = S.boot.zones.map(z => ({ z, s: cnt[z.id] || { n: 0, open: 0, bobot: 0 } })).filter(x => x.s.n).sort((a, b) => b.s.bobot - a.s.bobot || b.s.n - a.s.n);
-        rank.replaceChildren(...(ranked.length ? ranked.map((x, i) => el('div', { class: 'card row-card', onclick: () => openZoneSummary(x.z) }, el('div', { class: 'rank' }, i + 1),
-          el('div', { class: 'info' }, el('b', {}, x.z.nama_area), el('span', {}, x.s.n + ' temuan · ' + x.s.open + ' belum selesai · bobot prioritas ' + x.s.bobot), el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round(x.s.n / maxC * 100) + '%' }))))) : [el('p', { class: 'empty' }, 'Tidak ada temuan pada filter ini')]));
-        const luar = nOf('-');
-        info.textContent = 'Periode ' + d.periode.mulai + ' s/d ' + d.periode.selesai + ' · ' + nz(d.total, 0) + ' temuan' + (luar ? ' · ' + luar + ' tanpa zona' : '') + ' · tap zona untuk melihat ringkasan checklist, spot-check & temuan zona itu';
+      try { const r = range(); const d = await api('heatmap', Object.assign({ mode, kategori: kat.value, vendor_id: showVendor ? vendorSel.value : '', status: mode === 'temuan' ? stSel.value : mode === 'checklist' ? ckSel.value : '' }, r));
+        if (!map) { await loadMaps(); map = newMap(mapBox); } clearLayers();
+        const cnt = d.per_zona || {}; const zonesP = S.boot.zones.filter(z => (z.polygon || []).length);
+        if (mode === 'temuan') {
+          sub.textContent = scopeName() + ' · titik = lokasi temuan (tap titik untuk membuka temuannya) · warna zona makin pekat = makin banyak yang belum selesai';
+          const nOf = id => (cnt[id] || {}).n || 0, oOf = id => (cnt[id] || {}).open || 0; const hotOf = id => stSel.value === 'Close' ? nOf(id) : oOf(id);
+          const maxC = Math.max(1, ...Object.keys(cnt).map(k => stSel.value === 'Close' ? cnt[k].n : cnt[k].open));
+          sum.replaceChildren(stat(nz(d.total, 0), 'Temuan pada periode'), stat(nz(d.open, 0), 'Belum selesai'), stat(zonesP.filter(z => nOf(z.id)).length, 'Zona terdampak'));
+          zonesP.forEach(z => { const n = nOf(z.id), o = oOf(z.id), hot = hotOf(z.id);
+            const lbl = n ? (stSel.value === 'Close' ? ' · ' + n + ' selesai' : stSel.value === 'Open' ? ' · ' + o + ' belum selesai' : ' · ' + n + ' temuan' + (o ? ', ' + o + ' belum selesai' : ', semua selesai')) : '';
+            zonePoly(z, { color: hot ? '#FFB020' : n ? '#2DD4BF' : '#5EC8FF', fillColor: hot ? '#FF7A1A' : n ? '#14B8A6' : '#3B82F6', fillOpacity: hot ? .10 + .45 * (hot / maxC) : n ? .18 : .10, weight: hot ? 2.5 : 2 }, lbl, hot ? 'hot' : n ? 'done' : '', () => openZoneSummary(z)); });
+          const pts = (d.titik || []).filter(f => f.lat !== '' && f.lat != null).map(f => ({ lat: +f.lat, lng: +f.lng, w: +f.w || 1, cool: f.status === 'Close', f }));
+          if (!fitZones(map, S.boot.zones) && pts.length) map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [28, 28], maxZoom: 18 });
+          if (pts.length) layers.push(heatLayer(map, pts, 40));
+          // v1.13: penanda tak terlihat di atas kanvas panas agar tiap titik bisa diklik → popup temuan
+          pts.forEach(p => { const m = L.circleMarker([p.lat, p.lng], { radius: 11, stroke: false, fillColor: '#000', fillOpacity: 0.01, interactive: true, bubblingMouseEvents: false }).addTo(map); m.on('click', () => openFindingPopup(p.f)); m.bindTooltip(esc(p.f.kategori) + ' · ' + esc(p.f.prioritas) + ' · ' + (p.f.status === 'InProgress' ? 'In Progress' : esc(p.f.status)), { direction: 'top', offset: [0, -6] }); layers.push(m); });
+          const ranked = zonesP.map(z => ({ z, s: cnt[z.id] || { n: 0, open: 0, bobot: 0 } })).filter(x => x.s.n).sort((a, b) => b.s.bobot - a.s.bobot || b.s.n - a.s.n); rankHead.textContent = 'Zona terpanas';
+          rank.replaceChildren(...(ranked.length ? ranked.map((x, i) => el('div', { class: 'card row-card', onclick: () => openZoneSummary(x.z) }, el('div', { class: 'rank' }, i + 1),
+            el('div', { class: 'info' }, el('b', {}, x.z.nama_area), el('span', {}, x.s.n + ' temuan · ' + x.s.open + ' belum selesai · bobot prioritas ' + x.s.bobot), el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round(x.s.n / maxC * 100) + '%' }))))) : [el('p', { class: 'empty' }, 'Tidak ada temuan pada filter ini')]));
+          const luar = nOf('-');
+          info.textContent = 'Periode ' + d.periode.mulai + ' s/d ' + d.periode.selesai + ' · ' + nz(d.total, 0) + ' temuan · ' + nz(d.open, 0) + ' belum selesai' + (luar ? ' · ' + luar + ' tanpa zona' : '') + (stSel.value === '' ? ' · merah = belum selesai, biru-hijau = sudah Close' : '') + ' · tap titik = buka temuan, tap zona = ringkasan';
+        } else {
+          const label = mode === 'checklist' ? 'Checklist rekanan' : 'Spot-check organik'; const entri = d.entri || [];
+          sub.textContent = scopeName() + ' · ' + label + ' per zona · warna zona = rata-rata skor (hijau ≥ 85, kuning 60–84, merah < 60) · tap zona untuk melihat entrinya';
+          sum.replaceChildren(stat(nz(d.total, 0), label + ' pada periode'), stat(d.rata == null ? '–' : d.rata, 'Rata-rata skor'), stat(zonesP.filter(z => cnt[z.id]).length + '/' + zonesP.length, 'Zona dinilai'));
+          zonesP.forEach(z => { const s = cnt[z.id]; const cls = s ? scoreCls(s.rata) : ''; const st = s ? SCORE_STYLE[cls] : { color: '#5EC8FF', fillColor: '#3B82F6' };
+            zonePoly(z, Object.assign({ fillOpacity: s ? .32 : .08, weight: s ? 2.5 : 2 }, st), s ? ' · ' + s.n + '× · rata ' + s.rata : ' · belum ada', s ? 'score-' + cls : '', () => openEntriesPopup(z, entri.filter(e => e.zona_id === z.id), mode)); });
+          fitZones(map, S.boot.zones);
+          const ranked = zonesP.map(z => ({ z, s: cnt[z.id] })).filter(x => x.s).sort((a, b) => a.s.rata - b.s.rata || b.s.n - a.s.n); rankHead.textContent = 'Zona dengan skor terendah';
+          rank.replaceChildren(...(ranked.length ? ranked.map((x, i) => el('div', { class: 'card row-card', onclick: () => openEntriesPopup(x.z, entri.filter(e => e.zona_id === x.z.id), mode) }, el('div', { class: 'rank' }, i + 1),
+            el('div', { class: 'info' }, el('b', {}, x.z.nama_area), el('span', {}, x.s.n + ' ' + (mode === 'checklist' ? 'checklist' : 'spot-check') + ' · rata-rata ' + x.s.rata + ' · terendah ' + x.s.min + ' · terakhir ' + fmtDT(x.s.terakhir)), el('div', { class: 'bar' }, el('i', { class: 'bar-' + scoreCls(x.s.rata), style: 'width:' + Math.round(x.s.rata) + '%' }))), el('span', { class: 'pill ' + scoreCls(x.s.rata) }, x.s.rata))) : [el('p', { class: 'empty' }, 'Tidak ada ' + label.toLowerCase() + ' pada periode ini')]));
+          const noZona = zonesP.filter(z => !cnt[z.id]).length;
+          info.textContent = 'Periode ' + d.periode.mulai + ' s/d ' + d.periode.selesai + ' · ' + nz(d.total, 0) + ' entri' + (noZona ? ' · ' + noZona + ' zona belum ada ' + (mode === 'checklist' ? 'checklist' : 'spot-check') : '') + ' · tap zona untuk melihat entri, item, dan fotonya';
+        }
       } catch (e) { mapError(mapBox, e.message); info.textContent = ''; } };
-    [preset, kat, vendorSel, stSel].forEach(s => s.addEventListener('change', load)); load();
+    [preset, kat, vendorSel, stSel, ckSel].forEach(s => s.addEventListener('change', load)); load();
   };
+  /** v1.13: popup satu temuan dari titik heatmap — foto before/after, status, prioritas, SLA, waktu; tombol ke menu Temuan. */
+  function openFindingPopup(f) {
+    const ba = el('div', { class: 'ba ba-lg' }, el('div', { class: 'before' }), el('div', { class: f.foto_after ? 'after' : '' }));
+    photoImg(f.foto_open).then(i => { if (i.src) ba.firstChild.replaceWith(i); }); if (f.foto_after) photoImg(f.foto_after).then(i => { if (i.src) ba.lastChild.replaceWith(i); });
+    modal(el('div', { class: 'form zone-sum' }, el('div', { class: 'section-head' }, el('h3', {}, f.kategori + ' · ' + zonaName(f.zona_id)), el('a', { class: 'link', onclick: closeModal }, 'Tutup')), ba,
+      el('div', { class: 'chip-row' }, el('span', { class: 'pill ' + f.status }, f.status === 'InProgress' ? 'In Progress' : f.status), el('span', { class: 'chip chip-' + f.prioritas }, 'Prioritas ' + f.prioritas), slaChip(f), f.di_luar_zona === 'Y' ? el('span', { class: 'chip' }, 'pin di luar zona') : null, f.skala_pekerjaan === 'PekerjaanBesar' ? el('span', { class: 'chip' }, 'Pekerjaan Besar') : null),
+      el('p', { class: 'hint' }, 'Open ' + fmtDT(f.timestamp_open) + (f.pelapor ? ' oleh ' + f.pelapor : '') + (f.timestamp_inprogress ? ' · In Progress ' + fmtDT(f.timestamp_inprogress) : '') + (f.timestamp_close ? ' · Close ' + fmtDT(f.timestamp_close) : '') + ' · ' + vendorName(f.vendor_id)),
+      f.deskripsi ? el('p', { class: 'guide-p' }, f.deskripsi) : null,
+      el('button', { class: 'btn', onclick: () => { closeModal(); go('temuan', { detail: f }); } }, 'Buka di menu Temuan')));
+  }
+  /** v1.13: popup entri checklist rekanan / spot-check organik satu zona — skor, item Ya/Cukup/Tidak, status verifikasi, foto. */
+  function openEntriesPopup(z, rows, mode) {
+    const label = mode === 'checklist' ? 'Checklist rekanan' : 'Spot-check organik'; const parse = s => { try { return JSON.parse(s || '[]'); } catch (e) { return []; } };
+    const cards = rows.map(r => { const items = parse(r.item_checklist); const ph = el('div', { class: 'camera-row' }); [r.foto1, r.foto2, r.foto].filter(Boolean).forEach(id => photoImg(id).then(i => { if (i.src) { i.style.cssText = 'width:48%;border-radius:12px;object-fit:cover;max-height:180px'; ph.append(i); } }));
+      return el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, fmtDT(r.timestamp)), el('span', { class: 'pill ' + scoreCls(r.skor) }, 'Skor ' + nz(r.skor))),
+        el('p', { class: 'hint' }, 'Oleh ' + r.oleh + (r.status_verifikasi ? ' · ' + r.status_verifikasi : '') + (r.is_anomali === 'Y' ? ' · ANOMALI' : '') + (r.sedang_drain === 'Y' ? ' · saat jendela drain' : '')),
+        items.length ? el('ul', { class: 'guide-ul' }, ...items.map(i => el('li', {}, i.item + ': ', el('b', {}, i.hasil)))) : null, ph); });
+    const rata = rows.length ? Math.round(rows.reduce((s, r) => s + (Number(r.skor) || 0), 0) / rows.length * 10) / 10 : null;
+    modal(el('div', { class: 'form zone-sum' }, el('div', { class: 'section-head' }, el('h3', {}, label + ' · ' + z.nama_area), el('a', { class: 'link', onclick: closeModal }, 'Tutup')),
+      el('p', { class: 'hint' }, rows.length + ' entri pada periode' + (rata != null ? ' · rata-rata ' + rata : '') + ' · ' + vendorName(z.vendor_id)), rows.length ? el('div', { class: 'list' }, ...cards) : el('p', { class: 'empty' }, 'Belum ada ' + label.toLowerCase() + ' di zona ini pada periode terpilih')));
+  }
   /** v1.9: popup ringkasan zona (Heatmap) — checklist, spot-check, temuan N hari terakhir (14/30). Data: API.zoneSummary. */
   async function openZoneSummary(z, hari) { hari = hari || 14;
     const head = () => el('div', { class: 'section-head' }, el('h3', {}, z.nama_area), el('a', { class: 'link', onclick: closeModal }, 'Tutup'));
