@@ -145,6 +145,8 @@ select option{background:#0F1A2E;color:#F7FAFF}html[data-theme="light"] select o
 .cam-video{width:100%;max-height:62vh;border-radius:14px;background:#000;object-fit:cover;display:block}
 /* login */
 .login-foot{margin-top:4px;text-align:center;font-size:11px;color:var(--text);opacity:.85}.login-foot b{color:var(--head);font-weight:600}
+/* v1.16: catatan "data tersimpan · memperbarui…" (swrView) */
+.stale-note{display:flex;align-items:center;margin:0 0 10px;font-size:12px;opacity:.85}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--glass-border);border-top-color:var(--aqua);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}@keyframes spin{to{transform:rotate(360deg)}}
 .form{display:flex;flex-direction:column;gap:12px}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .btn{border:none;padding:13px 16px;border-radius:14px;font-family:Inter;font-weight:700;font-size:14px;cursor:pointer;color:var(--head);background:var(--glass-bg);border:1px solid var(--glass-border)}
@@ -462,8 +464,76 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     if (S.boot && S.boot.isMulti && body.pabrik_id === undefined) body.pabrik_id = S.scope;   // role global / multi-lingkup: kirim lingkup aktif
     if (!navigator.onLine && idb.db && WRITE_ACTIONS.includes(action)) { await idb.add({ body, t: Date.now() }); toast('Offline: disimpan di antrean, dikirim otomatis nanti'); return { queued: true }; }
     const j = await callServer(body);
-    if (!j.ok) { if (/login/i.test(j.error) && !(opt && opt.silent)) logout(); throw new Error(j.error); }
+    if (!j.ok) { if (/login/i.test(j.error) && !(opt && opt.silent) && body.token === S.token) logout(); throw new Error(j.error); }   // v1.16: jawaban terlambat dari token lama tidak mengeluarkan sesi baru
     return j.data;
+  }
+  /** v1.16: beberapa aksi dalam SATU panggilan server (Code.gs runBatch_) — tiap panggilan Apps Script ±1,5–3 dtk, jadi menggabungkan = menghemat waktu tunggu.
+   *  Hasil: array {ok,data,error} sesuai urutan calls. Lingkup aktif ditambahkan seperti api(). */
+  async function apiBatch(calls, opt) {
+    const multi = S.boot && S.boot.isMulti, tok = S.token;
+    const j = await callServer({ action: 'batch', token: tok, calls: calls.map(c => multi && c.pabrik_id === undefined ? Object.assign({ pabrik_id: S.scope }, c) : c) });
+    const err = !j.ok ? j.error : ((j.data || []).find(r => !r.ok && /login/i.test(r.error)) || {}).error;
+    if (err && /login/i.test(err) && !(opt && opt.silent) && tok === S.token) logout();
+    if (!j.ok) throw new Error(j.error);
+    return j.data;
+  }
+  /** v1.16: simpan + bootstrap ulang dalam satu panggilan (sebelumnya dua panggilan berurutan). Mengembalikan data aksi simpan (atau array bila >1 aksi). */
+  async function saveAndBoot(writes) {
+    if (!navigator.onLine) throw new Error('Tidak ada koneksi internet — perubahan belum tersimpan');
+    const r = await apiBatch(writes.concat([{ action: 'bootstrap', pabrik_id: S.scope }]));
+    S.pre = {}; const b = r[r.length - 1]; if (b.ok) { S.boot = b.data; saveBoot(); }
+    const bad = r.slice(0, -1).find(x => !x.ok); if (bad) throw new Error(bad.error);
+    return writes.length === 1 ? r[0].data : r.slice(0, -1).map(x => x.data);
+  }
+  /** v1.16: satu aksi simpan + bootstrap (argumen sama dengan api()). Offline / backend lama → jalur lama (api lalu bootstrap). */
+  async function apiSave(action, payload) {
+    try { return await saveAndBoot([Object.assign({ action }, payload || {})]); }
+    catch (e) { if (!/Action tidak dikenal: batch/.test(e.message)) throw e; const d = await api(action, payload); S.boot = await api('bootstrap'); saveBoot(); return d; }
+  }
+  /** v1.16: bootstrap (+ dashboard bila diminta) dalam satu panggilan. dash = {ok,data,error} atau null. */
+  async function fetchBoot(withDash, opt) {
+    const calls = [{ action: 'bootstrap', pabrik_id: S.scope }]; if (withDash) calls.push({ action: 'dashboard', pabrik_id: S.scope });
+    let r; try { r = await apiBatch(calls, opt); }
+    catch (e) { if (!/Action tidak dikenal: batch/.test(e.message)) throw e;   // backend lama (frontend Pages lebih baru dari /exec) → panggilan terpisah
+      const boot = await api('bootstrap', { pabrik_id: S.scope }, opt); if (!withDash) return { boot, dash: null };
+      return { boot, dash: await api('dashboard', { pabrik_id: S.scope }, { silent: true }).then(data => ({ ok: true, data }), err => ({ ok: false, error: err.message })) }; }
+    if (!r[0].ok) throw new Error(r[0].error);
+    return { boot: r[0].data, dash: r[1] || null };
+  }
+  /** "Prefetch" data layar (dipakai SEKALI oleh swrView, maks. 15 dtk; dibuang setiap ada simpan) — mis. dashboard yang ikut batch login/bootstrap. */
+  function setPre(key, promise) { promise.catch(() => { }); S.pre = S.pre || {}; S.pre[key] = { p: promise, t: Date.now() }; }
+  function preDash(dash) { if (dash) setPre('dashboard:' + S.scope, dash.ok ? Promise.resolve(dash.data) : Promise.reject(new Error(dash.error))); }
+
+  // ---------------- v1.16: data tersimpan di perangkat (localStorage) — layar langsung tampil dari data terakhir lalu diperbarui di belakang
+  //  - hz_boot: bootstrap terakhir + token pemiliknya; hz_c:<user>:<kunci>: data layar (Beranda, daftar Temuan)
+  //  - dihapus saat logout; dipakai hanya bila token masih berumur < TOKEN_MAX_MS (TTL sesi server 6 jam)
+  const TOKEN_MAX_MS = 5.8 * 3600 * 1000, LS_PFX = 'hz_c:';
+  const saved = {
+    key: k => LS_PFX + (S.user ? S.user.id : '-') + ':' + k,
+    get(k) { try { const s = localStorage.getItem(saved.key(k)); return s ? JSON.parse(s) : null; } catch (e) { return null; } },
+    set(k, v) { const key = saved.key(k); try { const s = JSON.stringify(v); if (s.length > 1500000) throw new Error('besar'); localStorage.setItem(key, s); } catch (e) { try { localStorage.removeItem(key); } catch (e2) { } } },
+    clear() { try { Object.keys(localStorage).filter(k => k.indexOf(LS_PFX) === 0 || k === 'hz_boot').forEach(k => localStorage.removeItem(k)); } catch (e) { } },
+  };
+  function saveBoot() { try { localStorage.setItem('hz_boot', JSON.stringify({ token: S.token, boot: S.boot })); } catch (e) { try { localStorage.removeItem('hz_boot'); } catch (e2) { } } }
+  function loadBoot() { try { const at = Number(store.get('hz_tok_at')) || 0; if (!at || Date.now() - at > TOKEN_MAX_MS) return null;
+    const o = JSON.parse(localStorage.getItem('hz_boot') || 'null'); return o && o.token === S.token && o.boot && o.boot.user ? o.boot : null; } catch (e) { return null; } }
+  /**
+   * v1.16: pola "tampilkan yang tersimpan, perbarui di belakang" untuk layar baca. render(data) menggambar ulang c.
+   * Data tersimpan → tampil seketika + catatan "memperbarui…"; data baru tiba → disimpan & digambar ulang bila berbeda (posisi gulir dipertahankan).
+   * Tidak ada data tersimpan → perilaku lama (Memuat… lalu tampil). Bila pengguna sudah pindah layar, hasil diabaikan.
+   */
+  async function swrView(c, key, fetcher, render) {
+    const seq = S.goSeq, old = saved.get(key);
+    const pe = S.pre && S.pre[key]; if (pe) delete S.pre[key]; const pre = pe && Date.now() - pe.t < 15000 ? pe.p : null;
+    const note = (txt, spin) => { const n = c.querySelector('.stale-note'); if (n) n.replaceChildren(spin ? el('span', { class: 'spin' }) : null, txt); };
+    if (old) { try { render(old); c.prepend(el('p', { class: 'hint stale-note' })); note('Menampilkan data tersimpan · memperbarui…', true); } catch (e) { } }
+    let fresh;
+    try { fresh = await (pre || fetcher()); }
+    catch (e) { if (!old || seq !== S.goSeq) throw e; note('Data tersimpan — gagal memperbarui: ' + e.message); return; }
+    saved.set(key, fresh);
+    if (seq !== S.goSeq) return;
+    if (old && JSON.stringify(old) === JSON.stringify(fresh)) { const n = c.querySelector('.stale-note'); if (n) n.remove(); return; }
+    const sc = c.scrollTop; render(fresh); if (old) c.scrollTop = sc;
   }
   async function flushQueue() { if (!idb.db || !navigator.onLine) return; const items = await idb.all(); for (const it of items) { try { it.body.token = S.token; const j = await callServer(it.body); if (j.ok || !/sesi|login/i.test(j.error)) await idb.del(it.id); } catch (e) { break; } } if (items.length) toast('Antrean offline terkirim (' + items.length + ')'); }
   window.addEventListener('online', () => { $('#offline-bar').classList.add('hidden'); flushQueue(); });
@@ -590,7 +660,22 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         if (!isStr) URL.revokeObjectURL(url); resolve(cv.toDataURL('image/jpeg', C.PHOTO_QUALITY)); };
       img.onerror = reject; img.src = url; });
   }
-  async function photoImg(fileId, cls) { const img = el('img', { class: (cls || '') + ' hz-photo', alt: '' }); if (!fileId) return img; try { const d = S.cache[fileId] || (S.cache[fileId] = (await api('photo', { file_id: fileId })).dataUrl); img.src = d; } catch (e) { } return img; }
+  // v1.16: foto dimuat BERKELOMPOK — semua foto yang diminta satu layar dalam ±30 ms digabung ke API.photos (6 per panggilan, paralel),
+  //  bukan satu panggilan Apps Script per foto. Hasil disimpan di S.cache.
+  const photoQ = { wait: {}, timer: 0 };
+  function photoData(id) {
+    if (S.cache[id]) return Promise.resolve(S.cache[id]);
+    if (photoQ.wait[id]) return photoQ.wait[id].p;
+    const w = { sent: false }; w.p = new Promise((res, rej) => { w.res = res; w.rej = rej; }); photoQ.wait[id] = w;
+    clearTimeout(photoQ.timer); photoQ.timer = setTimeout(flushPhotos, 30); return w.p;
+  }
+  function flushPhotos() {
+    const ids = Object.keys(photoQ.wait).filter(id => !photoQ.wait[id].sent); ids.forEach(id => { photoQ.wait[id].sent = true; });
+    const done = (id, d, e) => { const w = photoQ.wait[id]; if (!w) return; delete photoQ.wait[id]; if (d) { S.cache[id] = d; w.res(d); } else w.rej(e || new Error('Foto tidak ditemukan')); };
+    for (let i = 0; i < ids.length; i += 6) { const part = ids.slice(i, i + 6);
+      api('photos', { file_ids: part }).then(r => part.forEach(id => done(id, r && r[id]))).catch(e => part.forEach(id => done(id, null, e))); }
+  }
+  async function photoImg(fileId, cls) { const img = el('img', { class: (cls || '') + ' hz-photo', alt: '' }); if (!fileId) return img; try { img.src = await photoData(fileId); } catch (e) { } return img; }
 
   // ---------------- Peta: Leaflet + tile OpenStreetMap / Esri World Imagery (tanpa API key, tanpa billing)
   // Google Maps ditinggalkan (v1.3, 15 Sep 2026): butuh billing account, dan HeatmapLayer/DrawingManager sudah dihapus Google (v3.65).
@@ -691,13 +776,26 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     if (!id || !pin) { msg.textContent = 'Isi ID login dan password'; msg.className = 'hint err'; return; }
     msg.className = 'hint'; msg.replaceChildren(el('span', { class: 'spin' }), 'Memeriksa akun… (server Google kadang butuh 3–10 detik saat pertama dibuka)'); b.disabled = true;
     const slow = setTimeout(() => { if (b.disabled) msg.append(' Masih menunggu jawaban server…'); }, 12000);
-    try { const j = await callServer({ action: 'login', user_id: id, pin }); if (!j.ok) throw new Error(j.error);
-      S.token = j.data.token; store.set('hz_token', S.token); await boot(); msg.textContent = ''; $('#login-pin').value = ''; }
+    // v1.16: login + bootstrap + dashboard dalam SATU panggilan (sebelumnya tiga panggilan berurutan ±6 dtk)
+    try { const j = await callServer({ action: 'login', user_id: id, pin, then: [{ action: 'bootstrap', pabrik_id: S.scope }, { action: 'dashboard', pabrik_id: S.scope }] }); if (!j.ok) throw new Error(j.error);
+      S.token = j.data.token; store.set('hz_token', S.token); store.set('hz_tok_at', String(Date.now()));
+      const t = j.data.then; if (t && t[0] && t[0].ok) { preDash(t[1]); enterApp(t[0].data); } else await boot();   // backend lama (tanpa "then") → jalur biasa
+      msg.textContent = ''; $('#login-pin').value = ''; }
     catch (e) { msg.textContent = e.message; msg.className = 'hint err'; }
     finally { clearTimeout(slow); b.disabled = false; } }
-  function logout() { S.token = ''; store.del('hz_token'); $('#screen-app').classList.add('hidden'); $('#screen-login').classList.remove('hidden'); }
-  async function boot() { try { S.boot = await api('bootstrap', { pabrik_id: S.scope }, { silent: true }); } catch (e) { logout(); $('#login-msg').textContent = e.message; return; }
-    S.user = S.boot.user; $('#screen-login').classList.add('hidden'); $('#screen-app').classList.remove('hidden'); buildNav(); buildScope(); setBadge(S.boot.unread); go('home'); flushQueue(); S._lastRefresh = Date.now();
+  function logout() { S.token = ''; store.del('hz_token'); store.del('hz_tok_at'); saved.clear(); S.pre = {}; $('#screen-app').classList.add('hidden'); $('#screen-login').classList.remove('hidden'); }
+  /** v1.16: buka aplikasi. Ada bootstrap tersimpan (token sama & belum kedaluwarsa) → tampil SEKETIKA, lalu bootstrap+dashboard diperbarui di belakang (satu panggilan). */
+  async function boot() {
+    const cached = loadBoot();
+    if (cached) { const tok = S.token, p = fetchBoot(true, { silent: true }); S.pre = {}; setPre('dashboard:' + S.scope, p.then(r => { if (!r.dash.ok) throw new Error(r.dash.error); return r.dash.data; }));
+      enterApp(cached);
+      p.then(r => { if (tok !== S.token) return; const navSig = b => JSON.stringify([b.user, b.isMulti, b.pabrikList, (b.pabrik || []).map(x => x.id)]); const relayout = navSig(r.boot) !== navSig(S.boot);
+        S.boot = r.boot; S.user = r.boot.user; saveBoot(); setBadge(S.boot.unread); if (relayout) { buildNav(); buildScope(); go(S.view); } if (S.user.mustChange && !cached.user.mustChange) openAccount(true); })
+        .catch(e => { if (tok !== S.token) return; if (/login|sesi/i.test(e.message)) { logout(); $('#login-msg').textContent = e.message; } else toast('Gagal memperbarui data: ' + e.message, true); });
+      return; }
+    try { const r = await fetchBoot(true, { silent: true }); preDash(r.dash); enterApp(r.boot); }
+    catch (e) { logout(); $('#login-msg').textContent = e.message; } }
+  function enterApp(b) { S.boot = b; S.user = b.user; saveBoot(); $('#screen-login').classList.add('hidden'); $('#screen-app').classList.remove('hidden'); buildNav(); buildScope(); setBadge(S.boot.unread); go('home'); flushQueue(); S._lastRefresh = Date.now();
     if (S.user.mustChange) openAccount(true); }   // v1.10: password default wajib diganti
   const roleLabel = r => ({ PersonilRekanan: 'Personil Rekanan', Mandor: 'Mandor/Koordinator', KaryawanOrganik: 'Karyawan Organik', Admin: 'Admin Pabrik', Manajemen: 'Manajemen', SuperAdmin: 'Super Admin' }[r] || r);
   /** Pemilih lingkup di header untuk role global (Manajemen/SuperAdmin): "Semua lingkup" atau satu pabrik. */
@@ -707,7 +805,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   function buildScope() { const old = $('#scope-sel'); if (old) old.remove(); if (!S.boot.isMulti) return;
     const s = el('select', { id: 'scope-sel', class: 'scope-sel', title: 'Lingkup' }, el('option', { value: 'ALL' }, S.boot.isGlobal ? 'Semua lingkup' : 'Semua lingkup saya'), ...myPabriks().map(p => el('option', { value: p.id }, p.nama)));
     s.value = myPabriks().some(p => p.id === S.scope) ? S.scope : 'ALL'; S.scope = s.value;
-    s.addEventListener('change', async () => { S.scope = s.value; store.set('hz_scope', S.scope); try { S.boot = await api('bootstrap', { pabrik_id: S.scope }); } catch (e) { return toast(e.message, true); } go(S.view); });
+    s.addEventListener('change', async () => { S.scope = s.value; store.set('hz_scope', S.scope); try { const r = await fetchBoot(S.view === 'home'); S.boot = r.boot; saveBoot(); if (r.dash && r.dash.ok) saved.set('dashboard:' + S.scope, r.dash.data); if (S.view === 'home') preDash(r.dash); } catch (e) { return toast(e.message, true); } go(S.view); });   // v1.16: bootstrap + dashboard satu panggilan
     $('.hdr-actions').prepend(s); }
   const scopeName = () => { if (!S.boot.isMulti) return pabNames(S.user.pabrik_id); return S.scope === 'ALL' ? (S.boot.isGlobal ? 'Semua lingkup' : 'Semua lingkup saya') : pabNames(S.scope); };
   /** Panel admin yang butuh satu pabrik: role global harus memilih lingkup dulu. */
@@ -759,12 +857,14 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       el('h3', {}, 'Ganti password'), el('p', { class: 'hint' }, 'Boleh huruf, angka, dan simbol (minimal 6 karakter). Disimpan sebagai hash bersalt — tidak ada yang bisa membaca password Anda, termasuk Admin.'),
       fld('Password lama', lama), fld('Password baru', baru), fld('Ulangi password baru', ulang), btn));
   }
-  function go(view, arg) { S.view = view; S.viewArg = arg || null; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view)); const c = $('#content'); c.replaceChildren(el('p', { class: 'empty' }, 'Memuat...')); (VIEWS[view] || VIEWS.home)(c, arg).catch(e => { c.replaceChildren(el('p', { class: 'empty err' }, e.message)); }); }
+  function go(view, arg) { S.goSeq = (S.goSeq || 0) + 1; S.view = view; S.viewArg = arg || null; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view)); const c = $('#content'); c.replaceChildren(el('p', { class: 'empty' }, 'Memuat...')); (VIEWS[view] || VIEWS.home)(c, arg).catch(e => { c.replaceChildren(el('p', { class: 'empty err' }, e.message)); }); }
 
   const VIEWS = {};
   // ================= BERANDA
-  VIEWS.home = async (c) => {
-    const d = await api('dashboard', {}); const g = d.grafik || {};
+  // v1.16: Beranda = swrView (data tersimpan tampil seketika; dashboard hasil batch login/bootstrap dipakai bila ada)
+  VIEWS.home = (c) => swrView(c, 'dashboard:' + S.scope, () => api('dashboard', { pabrik_id: S.scope }), d => renderHome(c, d));
+  function renderHome(c, d) {
+    const g = d.grafik || {};
     const pab = d.pabrik_id === 'ALL' ? 'Semua lingkup' : String(d.pabrik_id || '').indexOf(',') !== -1 ? 'Semua lingkup saya' : pabNames(nz(d.pabrik_id, '-'));
     // v1.7: semua angka lewat nz() — nilai null/NaN dari server tampil "–", bukan teks "null"
     const hqiCards = (d.hqi || []).map(h => { const v = Number(nz(h.hqi_final, 0)); const ring = el('div', { class: 'ring', style: 'background:conic-gradient(var(--aqua) 0turn, var(--signal) ' + (v / 100) + 'turn, rgba(255,255,255,.12) 0turn)' }, el('div', { class: 'ring-value' }, el('b', {}, nz(h.hqi_final)), el('span', {}, 'HQI')));
@@ -789,8 +889,8 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       ...(hqiCards.length ? hqiCards : [el('p', { class: 'empty' }, 'Belum ada vendor terdaftar untuk lingkup ini')]), stats, kuotaCard, charts, hqiTrend,
       el('div', { class: 'card row-card link-card', onclick: () => go('heatmap') }, el('span', { class: 'link-ico', html: ICON.heatmap }), el('div', { class: 'info' }, el('b', {}, 'Heatmap temuan'), el('span', {}, heatN + ' titik temuan bulan ini · peta panas per zona dengan filter periode, kategori, vendor & status')), el('span', { class: 'link' }, 'Buka')),
       el('div', { class: 'section-head' }, el('h3', {}, 'Temuan terbaru'), el('a', { class: 'link', onclick: () => go('temuan') }, 'Lihat semua')), findingList(d.temuan_terbaru || []));
-  };
-  const stat = (v, l) => el('div', { class: 'card stat-card' }, el('b', {}, v), el('span', {}, l));
+  }
+  const stat =(v, l) => el('div', { class: 'card stat-card' }, el('b', {}, v), el('span', {}, l));
 
   // ================= HEATMAP (menu navigasi sendiri, v1.7 — semua role; PRD 7.7). Data: API.heatmap (filter periode/kategori/vendor/status)
   // ================= HEATMAP (v1.7 menu sendiri; v1.13: 3 mode — temuan / checklist rekanan / spot-check organik; titik temuan bisa diklik)
@@ -978,11 +1078,12 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   VIEWS.temuan = async (c, arg) => {
     if (arg && arg.detail) return findingDetail(c, arg.detail);
     if (arg && arg.create) return findingForm(c);
-    const rows = await api('listFindings', {});
-    const tabs = el('div', { class: 'tabs' }); let cur = 'Semua'; const listBox = el('div');
-    const render = () => { listBox.replaceChildren(findingList(cur === 'Semua' ? rows : rows.filter(r => r.status === cur))); };
-    ['Semua', 'Open', 'InProgress', 'Close'].forEach(t => tabs.append(el('button', { class: t === cur ? 'active' : '', onclick: e => { cur = t; tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === e.target)); render(); } }, t === 'InProgress' ? 'In Progress' : t)));
-    c.replaceChildren(el('div', { class: 'section-head' }, el('h2', {}, 'Temuan'), el('button', { class: 'btn primary sm', onclick: () => go('temuan', { create: true }) }, '+ Lapor temuan')), slaLegend(), tabs, listBox); render();
+    let cur = 'Semua';   // v1.16: daftar Temuan = swrView (tab terpilih bertahan saat data baru tiba)
+    return swrView(c, 'listFindings:' + S.scope, () => api('listFindings', {}), rows => {
+      const tabs = el('div', { class: 'tabs' }); const listBox = el('div');
+      const render = () => { listBox.replaceChildren(findingList(cur === 'Semua' ? rows : rows.filter(r => r.status === cur))); };
+      ['Semua', 'Open', 'InProgress', 'Close'].forEach(t => tabs.append(el('button', { class: t === cur ? 'active' : '', onclick: e => { cur = t; tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === e.target)); render(); } }, t === 'InProgress' ? 'In Progress' : t)));
+      c.replaceChildren(el('div', { class: 'section-head' }, el('h2', {}, 'Temuan'), el('button', { class: 'btn primary sm', onclick: () => go('temuan', { create: true }) }, '+ Lapor temuan')), slaLegend(), tabs, listBox); render(); });
   };
   async function findingForm(c) {
     const form = el('div', { class: 'form' }); let pin = null, gps = { status: 'Gagal' }, zona = null, marker, map, luar = false;
@@ -1068,7 +1169,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     // v1.6: Mandor mengisi jumlah personil rekanan per zona (dipakai statistik Beranda & label zona)
     const perInputs = {}; const perCard = el('div', { class: 'card form' }, el('h3', {}, 'Personil rekanan per zona'), el('p', { class: 'hint' }, 'Isi jumlah personil yang bertugas di tiap zona Anda (bisa diubah kapan saja).'),
       ...zones.map(z => { perInputs[z.id] = el('input', { type: 'number', min: 0, value: Number(z.jumlah_personil) || 0 }); return fld(z.nama_area, perInputs[z.id]); }),
-      el('button', { class: 'btn sm', onclick: async e => { e.target.disabled = true; try { for (const z of zones) { const v = Number(perInputs[z.id].value) || 0; if (v !== (Number(z.jumlah_personil) || 0)) await api('setZonePersonil', { zona_id: z.id, jumlah: v }); } toast('Jumlah personil tersimpan'); S.boot = await api('bootstrap'); } catch (err) { toast(err.message, true); } e.target.disabled = false; } }, 'Simpan jumlah personil'));
+      el('button', { class: 'btn sm', onclick: async e => { e.target.disabled = true; try { const w = zones.map(z => ({ z, v: Number(perInputs[z.id].value) || 0 })).filter(x => x.v !== (Number(x.z.jumlah_personil) || 0)).map(x => ({ action: 'setZonePersonil', zona_id: x.z.id, jumlah: x.v })); if (w.length) await saveAndBoot(w); toast('Jumlah personil tersimpan'); }   /* v1.16: semua zona + bootstrap dalam satu panggilan */ catch (err) { toast(err.message, true); } e.target.disabled = false; } }, 'Simpan jumlah personil'));
     const drain = el('input', { type: 'checkbox' }); const items = el('div'); const f1 = cameraSlot('Foto 1 (wajib)'), f2 = cameraSlot('Foto 2 (opsional)');
     const btn = el('button', { class: 'btn primary' }, 'Kirim checklist');
     const renderItems = () => { const qs = qFor(zsel.value, 'ChecklistHarian'); items.replaceChildren(...(qs.length ? qs.map(q => triItem(q, drain.checked)) : [el('p', { class: 'empty' }, 'Belum ada pertanyaan untuk zona ini — hubungi Admin')])); };
@@ -1196,7 +1297,9 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   function loadExcelJS() { if (window.ExcelJS) return Promise.resolve(); return new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'; s.onload = res; s.onerror = () => rej(new Error('Gagal memuat pustaka Excel (exceljs dari cdnjs) — periksa koneksi')); document.head.append(s); }); }
   /** Ambil foto (data URL) untuk banyak file id sekaligus — 8 per panggilan, memakai cache S.cache. */
   async function fetchPhotos(ids, onProgress) { const need = Array.from(new Set(ids.filter(Boolean))).filter(id => !S.cache[id]); let done = 0;
-    for (let i = 0; i < need.length; i += 8) { const part = need.slice(i, i + 8); const r = await api('photos', { file_ids: part }); part.forEach(id => { if (r[id]) S.cache[id] = r[id]; }); done += part.length; onProgress && onProgress(done, need.length); } }
+    const parts = []; for (let i = 0; i < need.length; i += 8) parts.push(need.slice(i, i + 8));
+    let next = 0; const worker = async () => { while (next < parts.length) { const part = parts[next++]; const r = await api('photos', { file_ids: part }); part.forEach(id => { if (r[id]) S.cache[id] = r[id]; }); done += part.length; onProgress && onProgress(done, need.length); } };
+    await Promise.all([worker(), worker(), worker()]); }   // v1.16: 3 panggilan paralel (sebelumnya berurutan)
   const EXPORT_PHOTO_MAX = 60;   // temuan berfoto per ekspor (120 foto) agar berkas tidak raksasa
   async function exportReportExcel(r, meta, withPhotos, status) { await loadExcelJS(); const F = 'Arial'; const wb = new ExcelJS.Workbook(); wb.creator = 'Horizon HQI';
     const head = ws => { const row = ws.getRow(ws.rowCount); row.eachCell(cell => { cell.font = { name: F, bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3A5F' } }; cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }; }); };
@@ -1305,7 +1408,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       addBtn.addEventListener('click', () => { drawer.resume(); finishBtn.hidden = undoBtn.hidden = false; addBtn.hidden = true; toast('Tap peta untuk menambah titik di ujung polygon, lalu "Selesai gambar"'); });
       resetBtn.addEventListener('click', () => { if (!editing) return; drawer.load(editing.polygon); finishBtn.hidden = undoBtn.hidden = true; setEditUI(); toast('Polygon dikembalikan ke yang tersimpan'); });
       finishBtn.addEventListener('click', () => drawer.finish()); undoBtn.addEventListener('click', () => drawer.undo()); }
-    const refresh = async tab => { S.boot = await api('bootstrap'); go('admin', { tab: tab || 'zona' }); };
+    const refresh = tab => go('admin', { tab: tab || 'zona' });   // v1.16: bootstrap sudah ikut apiSave
     // ---- v1.7.1: PEMILIH pertanyaan untuk zona yang sedang diedit — memilih dari pertanyaan yang sudah dibuat di Survey Builder
     //      (centang = berlaku di zona ini; pertanyaan "Semua zona" selalu berlaku dan tidak bisa dilepas di sini). Server: upsertQuestion dengan zona_id = daftar id zona.
     const renderQs = () => { const z = editing; if (!z) return; const all = S.boot.questions.slice().sort((a, b) => (qZones(a) === 'ALL' ? 0 : 1) - (qZones(b) === 'ALL' ? 0 : 1) || a.teks_pertanyaan.localeCompare(b.teks_pertanyaan));
@@ -1315,7 +1418,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         // v1.7.3: pertanyaan "Semua zona" boleh dilepas dari zona ini → diubah menjadi daftar eksplisit semua zona aktif pabrik kecuali zona ini
         const pabrikZones = (S.boot.zonesAll && S.boot.zonesAll.length ? S.boot.zonesAll : S.boot.zones).filter(x => x.pabrik_id === z.pabrik_id && x.status !== 'Nonaktif').map(x => x.id);
         cb.addEventListener('change', async () => { cb.disabled = true; const next = global ? pabrikZones.filter(id => id !== z.id) : (on ? zs.filter(id => id !== z.id) : zs.concat([z.id]));
-          try { await api('upsertQuestion', { question: { id: q.id, zona_id: next } }); toast(cb.checked ? 'Pertanyaan dipakai di zona ' + z.nama_area : 'Pertanyaan dilepas dari zona ' + z.nama_area + (global ? ' (kini berlaku di zona lain saja, bukan "Semua zona")' : '')); S.boot = await api('bootstrap'); renderQs(); renderList(); }
+          try { await apiSave('upsertQuestion', { question: { id: q.id, zona_id: next } }); toast(cb.checked ? 'Pertanyaan dipakai di zona ' + z.nama_area : 'Pertanyaan dilepas dari zona ' + z.nama_area + (global ? ' (kini berlaku di zona lain saja, bukan "Semua zona")' : '')); renderQs(); renderList(); }
           catch (err) { toast(err.message, true); cb.checked = on; cb.disabled = false; } });
         const lain = global ? 'Semua zona' : zs.filter(id => id !== z.id).map(zonaName).join(', ');
         return el('label', { class: 'check-item pick' + (on ? ' on' : '') }, cb, el('span', {}, q.teks_pertanyaan, el('em', {}, q.berlaku_untuk + (q.terkait_drain === 'Y' ? ' · N/A saat drain' : '') + (lain ? ' · ' + (global ? 'berlaku di semua zona (lepas centang = semua zona kecuali ini)' : 'juga di: ' + lain) : ' · hanya zona ini')))); });
@@ -1326,14 +1429,14 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       const edit = focusQ => { try { editing = z; nama.value = z.nama_area || ''; desk.value = z.deskripsi || ''; vend.value = z.vendor_id || ''; kat.value = z.kategori || ''; per.value = Number(z.jumlah_personil) || 0; if (drawer) { finishBtn.hidden = undoBtn.hidden = true; drawer.load(z.polygon || []); } setEditUI();
         (focusQ === true ? qCard : mapBox).scrollIntoView({ behavior: 'smooth', block: 'start' }); if (focusQ !== true) toast('Zona "' + z.nama_area + '" dimuat: ubah polygon di peta dan/atau data di form, lalu "Simpan zona"'); }
         catch (err) { toast('Gagal memuat zona untuk diedit: ' + err.message, true); console.error(err); } };   // v1.7.1: kesalahan ditampilkan, bukan diam
-      const tgl = el('button', { class: 'btn sm', onclick: async e => { e.stopPropagation(); try { await api('upsertZone', { zone: { id: z.id, status: aktif ? 'Nonaktif' : 'Aktif' } }); toast(aktif ? 'Zona dinonaktifkan' : 'Zona diaktifkan kembali'); refresh('zona'); } catch (err) { toast(err.message, true); } } }, aktif ? 'Nonaktifkan' : 'Aktifkan');
+      const tgl = el('button', { class: 'btn sm', onclick: async e => { e.stopPropagation(); try { await apiSave('upsertZone', { zone: { id: z.id, status: aktif ? 'Nonaktif' : 'Aktif' } }); toast(aktif ? 'Zona dinonaktifkan' : 'Zona diaktifkan kembali'); refresh('zona'); } catch (err) { toast(err.message, true); } } }, aktif ? 'Nonaktifkan' : 'Aktifkan');
       const del = el('button', { class: 'btn danger sm', onclick: async e => { e.stopPropagation(); if (!await confirmModal('Hapus zona "' + z.nama_area + '"?\nBila sudah ada temuan/checklist/spot-check di zona ini, zona hanya dinonaktifkan agar histori tetap valid.')) return;
-        try { const r = await api('deleteZone', { id: z.id }); toast(r.mode === 'hapus' ? 'Zona dihapus permanen' : 'Zona dinonaktifkan (ada ' + r.terkait + ' data terkait)'); refresh('zona'); } catch (err) { toast(err.message, true); } } }, 'Hapus');
+        try { const r = await apiSave('deleteZone', { id: z.id }); toast(r.mode === 'hapus' ? 'Zona dihapus permanen' : 'Zona dinonaktifkan (ada ' + r.terkait + ' data terkait)'); refresh('zona'); } catch (err) { toast(err.message, true); } } }, 'Hapus');
       return el('div', { class: 'card row-card zone-row', onclick: () => edit() }, el('div', { class: 'info' }, el('b', {}, z.nama_area), el('span', {}, vendorName(z.vendor_id) + ' · ' + (z.kategori || '-') + ' · ' + (Number(z.jumlah_personil) || 0) + ' personil · ' + zoneQs(z.id).length + ' pertanyaan khusus zona')), el('span', { class: 'pill ' + (aktif ? 'ok' : 'Nonaktif') }, aktif ? 'Aktif' : 'Nonaktif'),
         el('div', { class: 'row-actions' }, el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); edit(); } }, 'Edit'), el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); edit(true); } }, 'Pertanyaan'), tgl, del)); })); };
     renderList();
     save.addEventListener('click', async () => { if (!drawer || !drawer.polygon) return toast('Gambar polygon dulu', true); if (drawer.drawing && !drawer.finish()) return; if (drawer.count() < 3) return toast('Polygon minimal 3 titik', true); if (!nama.value) return toast('Nama area wajib', true); const path = drawer.path();
-      try { await api('upsertZone', { zone: { id: editing ? editing.id : undefined, nama_area: nama.value, deskripsi: desk.value, vendor_id: vend.value, kategori: kat.value, polygon: path, jumlah_personil: Number(per.value) || 0 } }); toast(editing ? 'Zona diperbarui' : 'Zona tersimpan'); refresh('zona'); } catch (e) { toast(e.message, true); } });
+      try { await apiSave('upsertZone', { zone: { id: editing ? editing.id : undefined, nama_area: nama.value, deskripsi: desk.value, vendor_id: vend.value, kategori: kat.value, polygon: path, jumlah_personil: Number(per.value) || 0 } }); toast(editing ? 'Zona diperbarui' : 'Zona tersimpan'); refresh('zona'); } catch (e) { toast(e.message, true); } });
   }
   /** SuperAdmin: kelola lingkup/pabrik (v1.4) — tambah lingkup baru mis. "Operasi Pabrik IIIA". */
   async function adminLingkup(b) {
@@ -1345,7 +1448,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       el('table', { class: 'tbl' }, el('tr', {}, ...['ID', 'Nama', 'Jam kerja', 'Deadline', 'Akun admin'].map(h => el('th', {}, h))), ...rows.map(p => el('tr', { style: 'cursor:pointer', onclick: () => { editing = p; id.value = p.id; id.disabled = true; nama.value = p.nama; jm.value = hm(p.jam_mulai); js.value = hm(p.jam_selesai); dl.value = hm(p.deadline_verifikasi); rem.value = p.reminder_jam_sebelum; } },
         el('td', {}, p.id), el('td', {}, p.nama), el('td', {}, hm(p.jam_mulai) + '–' + hm(p.jam_selesai)), el('td', {}, hm(p.deadline_verifikasi)), el('td', {}, 'admin-' + String(p.id).toLowerCase())))));
     save.addEventListener('click', async () => { if (!id.value || !nama.value) return toast('ID dan nama wajib', true);
-      try { const r = await api('upsertPabrik', { pabrik: { id: id.value, nama: nama.value, jam_mulai: jm.value, jam_selesai: js.value, deadline_verifikasi: dl.value, reminder_jam_sebelum: rem.value } }); toast(r.baru ? 'Lingkup dibuat · akun ' + r.admin_id + ' PIN 123456' : 'Lingkup diperbarui'); S.boot = await api('bootstrap'); buildScope(); go('admin', { tab: 'lingkup' }); } catch (e) { toast(e.message, true); } });
+      try { const r = await apiSave('upsertPabrik', { pabrik: { id: id.value, nama: nama.value, jam_mulai: jm.value, jam_selesai: js.value, deadline_verifikasi: dl.value, reminder_jam_sebelum: rem.value } }); toast(r.baru ? 'Lingkup dibuat · akun ' + r.admin_id + ' PIN 123456' : 'Lingkup diperbarui'); buildScope(); go('admin', { tab: 'lingkup' }); } catch (e) { toast(e.message, true); } });
   }
   const hm = v => { const s = String(v || ''); const t = s.indexOf('T') !== -1 ? s.split('T')[1] : s; return t.slice(0, 5); };
   async function adminPertanyaan(b) {
@@ -1366,15 +1469,15 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const render = () => { const rs = rows.filter(q => !filter.value || (filter.value === 'ALL' ? qZones(q) === 'ALL' : qAppliesTo(q, filter.value))).sort((a, b) => (qZones(a) === 'ALL' ? 0 : 1) - (qZones(b) === 'ALL' ? 0 : 1) || zLabel(a).localeCompare(zLabel(b)));
       list.replaceChildren(...(rs.length ? rs.map(q => el('div', { class: 'card row-card', onclick: () => { editing = q; teks.value = q.teks_pertanyaan; untuk.value = q.berlaku_untuk; drain.checked = q.terkait_drain === 'Y'; setZ(q.zona_id); teks.scrollIntoView({ behavior: 'smooth', block: 'center' }); } },
         el('div', { class: 'info' }, el('b', {}, q.teks_pertanyaan), el('span', {}, zLabel(q) + ' · ' + q.berlaku_untuk + (q.terkait_drain === 'Y' ? ' · N/A saat drain' : ''))), el('span', { class: 'pill ' + (q.status === 'Aktif' ? 'ok' : 'Nonaktif') }, q.status),
-        el('button', { class: 'btn sm', onclick: async e => { e.stopPropagation(); try { await api('upsertQuestion', { question: { id: q.id, terkait_drain: q.terkait_drain === 'Y', status: q.status === 'Aktif' ? 'Nonaktif' : 'Aktif' } }); S.boot = await api('bootstrap'); go('admin', { tab: 'pertanyaan' }); } catch (err) { toast(err.message, true); } } }, q.status === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan'),
+        el('button', { class: 'btn sm', onclick: async e => { e.stopPropagation(); try { await apiSave('upsertQuestion', { question: { id: q.id, terkait_drain: q.terkait_drain === 'Y', status: q.status === 'Aktif' ? 'Nonaktif' : 'Aktif' } }); go('admin', { tab: 'pertanyaan' }); } catch (err) { toast(err.message, true); } } }, q.status === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan'),
         el('button', { class: 'btn danger sm', onclick: async e => { e.stopPropagation(); if (!await confirmModal('Hapus pertanyaan "' + q.teks_pertanyaan + '"?\nBila sudah pernah dipakai di checklist/spot-check, pertanyaan hanya dinonaktifkan agar histori tetap valid.')) return;
-          try { const r = await api('deleteQuestion', { id: q.id }); toast(r.mode === 'hapus' ? 'Pertanyaan dihapus permanen' : 'Pertanyaan dinonaktifkan (sudah dipakai di ' + r.terkait + ' pengisian)'); S.boot = await api('bootstrap'); go('admin', { tab: 'pertanyaan' }); } catch (err) { toast(err.message, true); } } }, 'Hapus'))) : [el('p', { class: 'empty' }, 'Belum ada pertanyaan')]));   /* v1.9.1: Hapus */ };
+          try { const r = await apiSave('deleteQuestion', { id: q.id }); toast(r.mode === 'hapus' ? 'Pertanyaan dihapus permanen' : 'Pertanyaan dinonaktifkan (sudah dipakai di ' + r.terkait + ' pengisian)'); go('admin', { tab: 'pertanyaan' }); } catch (err) { toast(err.message, true); } } }, 'Hapus'))) : [el('p', { class: 'empty' }, 'Belum ada pertanyaan')]));   /* v1.9.1: Hapus */ };
     filter.addEventListener('change', render); render();
     b.replaceChildren(el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Survey Builder'), reset), el('p', { class: 'hint' }, 'Pertanyaan "Semua zona" berlaku di seluruh zona pabrik; pertanyaan khusus hanya muncul di zona yang dicentang (boleh lebih dari satu — v1.7.1; bisa juga dipilih dari tab Zona saat mengedit zona). Perubahan berlaku untuk pengisian berikutnya (non-retroaktif).'),
       fld('Pertanyaan', teks), fld('Berlaku untuk modul', untuk), el('label', { class: 'toggle' }, drain, 'Terkait drain (N/A saat jendela drain)'), el('div', { class: 'field' }, el('span', {}, 'Berlaku di zona (boleh lebih dari satu)'), zBox), save),
       el('div', { class: 'section-head' }, el('h3', {}, 'Daftar pertanyaan (' + rows.length + ')'), fld('', filter)), list);
     save.addEventListener('click', async () => { if (!teks.value) return toast('Teks pertanyaan wajib', true); const zs = getZ(); if (zs !== 'ALL' && !zs.length) return toast('Pilih minimal satu zona atau centang "Semua zona"', true);
-      try { await api('upsertQuestion', { question: { id: editing ? editing.id : undefined, teks_pertanyaan: teks.value, berlaku_untuk: untuk.value, terkait_drain: drain.checked, zona_id: zs } }); toast('Tersimpan'); S.boot = await api('bootstrap'); go('admin', { tab: 'pertanyaan' }); } catch (e) { toast(e.message, true); } });
+      try { await apiSave('upsertQuestion', { question: { id: editing ? editing.id : undefined, teks_pertanyaan: teks.value, berlaku_untuk: untuk.value, terkait_drain: drain.checked, zona_id: zs } }); toast('Tersimpan'); go('admin', { tab: 'pertanyaan' }); } catch (e) { toast(e.message, true); } });
   }
   async function adminUser(b) {
     const superA = S.user.role === 'SuperAdmin'; if (!superA && needScope(b)) return;
@@ -1406,10 +1509,10 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
           parsed.length > 50 ? el('p', { class: 'hint' }, '… dan ' + (parsed.length - 50) + ' baris lagi') : null); impBtn.disabled = !parsed.length; }
       catch (e) { prev.replaceChildren(el('p', { class: 'empty err' }, e.message)); } });
     impBtn.addEventListener('click', async () => { if (!parsed.length) return; if (!await confirmModal('Impor ' + parsed.length + ' user?\nBaris bermasalah akan dilewati dan dilaporkan; baris lain tetap dibuat.')) return; impBtn.disabled = true; prev.append(el('p', { class: 'empty' }, 'Mengimpor… mohon tunggu (server memproses ±0,5 detik per user)'));
-      try { const r = await api('importUsers', { rows: parsed });
+      try { const r = await apiSave('importUsers', { rows: parsed });
         prev.replaceChildren(el('p', { class: 'hint' }, 'Selesai: ' + r.dibuat + ' user dibuat, ' + r.gagal + ' gagal. Sampaikan ID login & password ke tiap user.'),
           el('table', { class: 'tbl' }, el('tr', {}, ...['Baris', 'Nama', 'ID login', 'Role', 'Status'].map(h => el('th', {}, h))), ...r.hasil.map(x => el('tr', {}, el('td', {}, x.baris), el('td', {}, x.nama), el('td', {}, x.id), el('td', {}, x.role), el('td', { class: x.status === 'OK' ? '' : 'warn-text' }, x.status)))));
-        parsed = []; fileIn.value = ''; S.boot = await api('bootstrap'); }
+        parsed = []; fileIn.value = ''; }
       catch (e) { toast(e.message, true); impBtn.disabled = false; } });
     const impCard = el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Impor user kolektif (Excel/CSV)'), el('a', { class: 'link', onclick: () => downloadUserTemplate().catch(e => toast(e.message, true)) }, 'Unduh template Excel')),
       el('p', { class: 'hint' }, 'Kolom: nama, id_login (opsional), role, pabrik_id, vendor, password (opsional; kosong = 123456). ' + (superA ? 'Super Admin boleh semua role & lingkup.' : 'Admin lingkup: hanya Mandor & Personil Rekanan di ' + scopeName() + ' (kolom pabrik_id diabaikan).') + ' Maks. 200 baris per berkas.'),
@@ -1429,11 +1532,11 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
           el('div', { class: 'row-actions' }, dup ? el('button', { class: 'btn danger sm', onclick: async e => { e.stopPropagation(); if (!await confirmModal('Hapus baris ganda untuk ID "' + u.id + '"?\nBaris pertama dipertahankan; baris ganda dihapus permanen dari tab Users.')) return; try { const r = await api('removeDuplicateUser', { id: u.id }); toast(r.dihapus + ' baris ganda dihapus'); go('admin', { tab: 'user' }); } catch (err) { toast(err.message, true); } } }, 'Hapus duplikat') : null, el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); edit(); } }, 'Edit'), el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); resetPw(u); } }, 'Reset password'),
             u.id !== S.user.id ? el('button', { class: 'btn sm', onclick: async e => { e.stopPropagation(); try { await api('upsertUser', { user: { id: u.id, role: u.role, pabrik_id: u.pabrik_id, vendor_id: u.vendor_id, status: aktif ? 'Nonaktif' : 'Aktif' } }); toast(aktif ? 'User dinonaktifkan' : 'User diaktifkan'); go('admin', { tab: 'user' }); } catch (err) { toast(err.message, true); } } }, aktif ? 'Nonaktifkan' : 'Aktifkan') : null)); })));
     applySearch();
-    save.addEventListener('click', async () => { if (!nama.value) return toast('Nama wajib', true); if (superA && multiRole(role.value) && !getPab()) return toast('Pilih minimal satu lingkup', true); if (save.disabled) return; save.disabled = true; setTimeout(() => { save.disabled = false; }, 8000); /* v1.9.3: cegah klik ganda → user ganda */ try { const r = await api('upsertUser', { user: { id: editing ? editing.id : undefined, id_login: idl.value, nama: nama.value, role: role.value, pabrik_id: superA ? getPab() : undefined, vendor_id: vend.value, pin: pin.value } }); toast((editing ? 'User diperbarui' : 'User dibuat') + ' · ID login: ' + r.id + (!editing && !pin.value ? ' · password 123456' : '')); /* v1.9: ID login final ditampilkan (huruf kecil, spasi → "-") */ S.boot = await api('bootstrap'); go('admin', { tab: 'user' }); } catch (e) { toast(e.message, true); } });
+    save.addEventListener('click', async () => { if (!nama.value) return toast('Nama wajib', true); if (superA && multiRole(role.value) && !getPab()) return toast('Pilih minimal satu lingkup', true); if (save.disabled) return; save.disabled = true; setTimeout(() => { save.disabled = false; }, 8000); /* v1.9.3: cegah klik ganda → user ganda */ try { const r = await apiSave('upsertUser', { user: { id: editing ? editing.id : undefined, id_login: idl.value, nama: nama.value, role: role.value, pabrik_id: superA ? getPab() : undefined, vendor_id: vend.value, pin: pin.value } }); toast((editing ? 'User diperbarui' : 'User dibuat') + ' · ID login: ' + r.id + (!editing && !pin.value ? ' · password 123456' : '')); /* v1.9: ID login final ditampilkan (huruf kecil, spasi → "-") */ go('admin', { tab: 'user' }); } catch (e) { toast(e.message, true); } });
   }
   async function adminVendor(b) { if (needScope(b)) return; const nama = el('input', { placeholder: 'Nama rekanan/kontrak' }); const save = el('button', { class: 'btn primary' }, 'Tambah vendor');
     b.replaceChildren(el('div', { class: 'card form' }, el('h3', {}, 'Vendor / Rekanan'), fld('Nama', nama), save), el('div', { class: 'list' }, ...S.boot.vendors.map(v => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, v.nama), el('span', {}, v.id)), el('span', { class: 'pill ok' }, v.status)))));
-    save.addEventListener('click', async () => { try { await api('upsertVendor', { vendor: { nama: nama.value } }); toast('Vendor ditambah'); S.boot = await api('bootstrap'); go('admin', { tab: 'vendor' }); } catch (e) { toast(e.message, true); } }); }
+    save.addEventListener('click', async () => { try { await apiSave('upsertVendor', { vendor: { nama: nama.value } }); toast('Vendor ditambah'); go('admin', { tab: 'vendor' }); } catch (e) { toast(e.message, true); } }); }
   async function adminJadwal(b) { if (needScope(b)) return; const rows = await api('listSchedules', {}); const zona = sel([{ v: 'ALL', t: 'Semua zona' }].concat(S.boot.zones.map(z => ({ v: z.id, t: z.nama_area })))), jenis = el('input', { value: 'Drain' }), m = el('input', { type: 'datetime-local' }), s = el('input', { type: 'datetime-local' }), sla = el('input', { type: 'number', value: 45 }); const save = el('button', { class: 'btn primary' }, 'Simpan jadwal');
     b.replaceChildren(el('div', { class: 'card form' }, el('h3', {}, 'Kalender Aktivitas Operasional'), el('p', { class: 'hint' }, 'Temuan/checklist dalam jendela ini diperlakukan sebagai exception (SLA khusus, item drain = N/A)'), fld('Zona', zona), fld('Jenis aktivitas', jenis), el('div', { class: 'form-row' }, fld('Mulai', m), fld('Selesai', s)), fld('SLA respons khusus (menit)', sla), save),
       el('table', { class: 'tbl' }, el('tr', {}, ...['Aktivitas', 'Zona', 'Mulai', 'Selesai', 'SLA'].map(h => el('th', {}, h))), ...rows.map(r => el('tr', {}, el('td', {}, r.jenis_aktivitas), el('td', {}, r.zona_id === 'ALL' ? 'Semua' : zonaName(r.zona_id)), el('td', {}, fmtDT(r.waktu_mulai)), el('td', {}, fmtDT(r.waktu_selesai)), el('td', {}, r.sla_respons_menit + 'm')))));
@@ -1454,8 +1557,8 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     G1.forEach(([k]) => F[k].addEventListener('input', refreshTotal)); refreshTotal();
     b.replaceChildren(el('div', { class: 'greeting' }, el('h3', {}, 'Bobot HQI & Parameter'), el('p', {}, 'Berlaku sejak ' + String(cfg.berlaku_mulai || '').slice(0, 10) + (cfg.changed_by ? ' · diubah oleh ' + cfg.changed_by : ''))), card1, card2, card3);
     save.addEventListener('click', async () => { if (Math.round(sumB()) !== 100) return toast('Total bobot komponen HQI harus 100% (sekarang ' + sumB() + '%)', true); const config = {}; keys.forEach(([k]) => config[k] = Number(F[k].value) || 0);
-      try { await api('updateWeightConfig', { config }); toast('Konfigurasi tersimpan — berlaku mulai hari ini'); S.boot = await api('bootstrap'); go('admin', { tab: 'bobot' }); } catch (e) { toast(e.message, true); } }); }
-  async function adminReview(b) { const an = await api('listAnomali', {}), pb = await api('listPekerjaanBesar', {});
+      try { await apiSave('updateWeightConfig', { config }); toast('Konfigurasi tersimpan — berlaku mulai hari ini'); go('admin', { tab: 'bobot' }); } catch (e) { toast(e.message, true); } }); }
+  async function adminReview(b) { const [an, pb] = await Promise.all([api('listAnomali', {}), api('listPekerjaanBesar', {})]);   /* v1.16: paralel */
     b.replaceChildren(el('div', { class: 'section-head' }, el('h3', {}, 'Anomali validasi silang (' + an.length + ')')), el('div', { class: 'list' }, ...an.map(c => el('div', { class: 'card form' }, el('b', {}, zonaName(c.zona_id) + ' · skor checklist ' + c.skor), el('span', { class: 'hint' }, fmtDT(c.timestamp)), el('div', { class: 'form-row' }, el('button', { class: 'btn danger sm', onclick: () => rv(c.id, true) }, 'Penyimpangan nyata (keluarkan dari skor)'), el('button', { class: 'btn sm', onclick: () => rv(c.id, false) }, 'Bukan penyimpangan'))))),
       el('div', { class: 'section-head' }, el('h3', {}, 'Pengajuan Pekerjaan Besar (' + pb.length + ')')), findingList(pb));
     async function rv(id, real) { try { await api('reviewAnomali', { id, penyimpangan_nyata: real }); toast('Tersimpan'); go('admin', { tab: 'review' }); } catch (e) { toast(e.message, true); } } }
@@ -1545,7 +1648,10 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   const SAFE_VIEWS = ['home', 'heatmap', 'leaderboard', 'temuan']; let hiddenAt = 0, lastAct = Date.now(), refreshing = false; S._lastRefresh = Date.now();
   ['pointerdown', 'keydown', 'touchstart'].forEach(ev => document.addEventListener(ev, () => { lastAct = Date.now(); }, { passive: true }));
   async function autoRefresh(reason) { if (refreshing || !S.token || !S.user || !navigator.onLine || S.user.mustChange) return; refreshing = true;
-    try { S.boot = await api('bootstrap', { pabrik_id: S.scope }); S.user = S.boot.user; setBadge(S.boot.unread); S._lastRefresh = Date.now();
+    try { const view = S.view; let dash = null;   // v1.16: di Beranda, bootstrap + dashboard dalam satu panggilan
+      const r = await fetchBoot(view === 'home'); S.boot = r.boot; dash = r.dash;
+      S.user = S.boot.user; saveBoot(); setBadge(S.boot.unread); S._lastRefresh = Date.now();
+      if (dash && dash.ok) { saved.set('dashboard:' + S.scope, dash.data); if (S.view === 'home') preDash(dash); }
       const modalOpen = !$('#modal').classList.contains('hidden'); const hasForm = !!document.querySelector('#content .camera-slot, #content textarea');
       if (!modalOpen && !hasForm && !S.viewArg && SAFE_VIEWS.indexOf(S.view) !== -1) { const sc = $('#content').scrollTop; go(S.view); setTimeout(() => { $('#content').scrollTop = sc; }, 600); if (reason === 'kembali') toast('Data diperbarui'); } }
     catch (e) { /* offline / sesi habis ditangani api() */ }
