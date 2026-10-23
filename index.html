@@ -1461,6 +1461,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     return { horizon: pick('logo-utama'), op: pick('logo-op') }; }
   const GRADE_COLOR = { 'Sangat Baik': '#059669', 'Baik': '#2563EB', 'Perlu Perbaikan': '#D97706', 'Kritis': '#DC2626' };
   const tglID = iso => { const d = new Date(String(iso).slice(0, 10) + 'T00:00:00'); return isNaN(d) ? String(iso || '-') : d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }); };
+  const BA_FOTO_MAX = 16, BA_FOTO_PER_HAL = 8;   // v1.17.4: lampiran BA maks. 3 halaman = halaman depan + 2 halaman foto (8 temuan per halaman)
   /**
    * v1.17.3: kartu skor HQI besar untuk cetak/PDF (permintaan Rudy: skor HQI harus menonjol) — angka HQI besar di blok berwarna predikat
    * (Sangat Baik hijau, Baik biru, Perlu Perbaikan oranye, Kritis merah) + batang skor tiap komponen dengan bobotnya.
@@ -1470,60 +1471,97 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       + '<div class="hright"><div class="hvendor">' + esc(x.vendor) + '</div>'
       + hqiBasis(x).map(b => '<div class="hrow"><span class="hn">' + esc(b.nama) + ' <i>' + esc(nz(cfg[b.bobot], 0)) + '%</i></span><span class="hbar"><b style="width:' + Math.max(0, Math.min(100, Number(nz(b.skor, 0)) || 0)) + '%"></b></span><span class="hv">' + esc(nz(b.skor)) + '</span></div>').join('')
       + (x.catatan ? '<div class="hnote">' + esc(x.catatan) + '</div>' : '') + '</div></div>'; }
+  /** v1.17.4: ringkasan satu baris per komponen HQI untuk halaman depan lampiran BA (jumlah temuan, SLA, spot-check, checklist, kepatuhan). */
+  function baRingkasRows(x, nClose) { const d = x.rincian || {}, t = d.temuan || {}, sl = d.sla || {}, sp = d.spotcheck || {}, ck = d.checklist || {}, kp = d.kepatuhan || {};
+    const pr = (t.per_prioritas || []).filter(p => p.n).map(p => p.prioritas + ' ' + p.n).join(', '); const zs = kp.zona || [];
+    const teks = {
+      temuan: nz(t.n, 0) + ' temuan' + (pr ? ' (' + pr + ')' : '') + ' · ' + nClose + ' selesai (Close)',
+      sla: nz(sl.n_dinilai, 0) ? nz(sl.tepat, 0) + ' tepat waktu · ' + nz(sl.telat, 0) + ' terlambat' + (sl.open_telat ? ' · ' + sl.open_telat + ' open lewat target' : '') : 'Belum ada temuan yang dinilai',
+      spotcheck: nz(sp.n, 0) + (sp.kuota ? ' dari kuota ' + sp.kuota : '') + ' spot-check' + (sp.rata != null ? ' · rata-rata ' + sp.rata : '') + (sp.dari_checklist ? ' · ' + sp.dari_checklist + ' diisi skor checklist' : ''),
+      checklist: nz(ck.n, 0) + ' masuk · ' + nz(ck.valid, 0) + ' dihitung' + (ck.menunggu ? ' · ' + ck.menunggu + ' menunggu' : '') + (ck.ditolak ? ' · ' + ck.ditolak + ' ditolak' : ''),
+      kepatuhan: nz(kp.hari_kerja, 0) + ' hari kerja · ' + (zs.length ? zs.slice(0, 3).map(z => z.nama + ' ' + z.hari_terisi + ' hari (' + z.pct + '%)').join(', ') + (zs.length > 3 ? ' · +' + (zs.length - 3) + ' zona' : '') : 'belum ada zona'),
+    };
+    return hqiBasis(x).map(b => [b.nama, b.bobot, teks[b.key] || '', b.skor]); }
   /**
    * v1.17.3: form Lampiran Berita Acara Pekerjaan — Nomor OK & nama pekerjaan (teks bebas, boleh kosong → titik-titik untuk diisi tangan),
    * diingat per vendor di perangkat (localStorage, kemudahan saja). Hanya untuk laporan satu vendor (kolom tanda tangan Rekanan butuh satu nama).
+   * v1.17.4: foto before/after WAJIB (selalu disertakan, tidak mengikuti centang foto) dan dokumen maks. 3 halaman.
    */
   function openBaForm(r, meta, withPhotos, status) {
     if ((r.hqi || []).length !== 1) return toast('Lampiran berita acara dibuat per rekanan — pilih satu vendor di filter lalu tekan Tampilkan', true);
     const h = r.hqi[0]; const key = 'hz_ba:' + (h.vendor_id || meta.vendor); let last = {}; try { last = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (e) { }
     const ok = el('input', { type: 'text', placeholder: 'mis. 1234/OK/PG/2026', value: last.nomor_ok || '' }); const pk = el('textarea', { rows: 2, placeholder: 'mis. Jasa Kebersihan & Housekeeping Area Pabrik ZA II' }); pk.value = last.pekerjaan || '';
-    const btn = el('button', { class: 'btn primary' }, 'Cetak / Simpan PDF lampiran');
+    const btn = el('button', { class: 'btn primary' }, 'Cetak / Simpan PDF lampiran'); const n = (r.before_after || []).length;
     btn.addEventListener('click', () => { const ba = { nomor_ok: ok.value.trim(), pekerjaan: pk.value.trim() }; try { localStorage.setItem(key, JSON.stringify(ba)); } catch (e) { }
-      closeModal(); status('Menyiapkan…'); printReport(r, meta, withPhotos, status, ba).then(() => status('Selesai.'), err => { status(''); toast(err.message, true); }); });
+      closeModal(); status('Menyiapkan…'); printReport(r, meta, true, status, ba).then(() => status('Selesai.'), err => { status(''); toast(err.message, true); }); });
     modal(el('div', { class: 'form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Lampiran Berita Acara Pekerjaan'), el('a', { class: 'link', onclick: closeModal }, 'Tutup')),
-      el('p', { class: 'hint' }, 'Halaman depan berisi Nomor OK, nama pekerjaan, periode, skor HQI, dan kolom tanda tangan Rekanan & PT Petrokimia Gresik; halaman berikutnya laporan HQI lengkap. Kolom yang dikosongkan dicetak sebagai titik-titik untuk diisi tangan.'),
+      el('p', { class: 'hint' }, 'Maks. 3 halaman: halaman 1 = Nomor OK, nama pekerjaan, periode, skor HQI, ringkasan komponen, dan tanda tangan Rekanan & PT Petrokimia Gresik; halaman 2–3 = foto before/after temuan selesai. Kolom yang dikosongkan dicetak sebagai titik-titik untuk diisi tangan.'),
       fld('Nomor OK', ok), fld('Nama pekerjaan', pk),
-      el('p', { class: 'hint' }, 'Rekanan: ' + h.vendor + ' · Lokasi: ' + meta.pabrik + ' · Periode ' + tglID(r.periode.mulai) + ' s/d ' + tglID(r.periode.selesai) + (withPhotos ? ' · dengan foto before/after' : '')), btn));
+      el('p', { class: 'hint' }, 'Rekanan: ' + h.vendor + ' · Periode ' + tglID(r.periode.mulai) + ' s/d ' + tglID(r.periode.selesai) + ' · foto before/after: ' + (n ? Math.min(n, BA_FOTO_MAX) + ' temuan' + (n > BA_FOTO_MAX ? ' (dari ' + n + ' selesai; prioritas tertinggi & terbaru)' : '') : 'tidak ada temuan selesai')), btn));
     setTimeout(() => (ok.value ? pk : ok).focus(), 50);
   }
   /**
    * Cetak / simpan PDF: halaman laporan dibuka di jendela baru lalu dialog cetak browser (pilih "Simpan sebagai PDF").
    * v1.17: kepala = logo Horizon (kiri) & Operasi 3A (kanan); kaki = "Operasi Pabrik III A" (kiri) & "Petrokimia Gresik" (kanan), berulang tiap halaman.
-   * v1.17.3: skor HQI ditonjolkan (hqiHeroHtml); ba = {nomor_ok, pekerjaan} → halaman depan Lampiran Berita Acara (satu halaman, lalu pindah halaman).
+   * v1.17.3: skor HQI ditonjolkan (hqiHeroHtml); ba = {nomor_ok, pekerjaan} → Lampiran Berita Acara.
+   * v1.17.4: @page margin 0 → teks bawaan browser (tanggal/judul di atas, "about:blank" di bawah) tidak tercetak; margin diganti padding sendiri,
+   * kaki tengah = waktu unduh. Lampiran BA = halaman depan (skor + ringkasan komponen + tanda tangan) + maks. 2 halaman foto before/after (wajib).
    */
   async function printReport(r, meta, withPhotos, status, ba) { const win = window.open('', '_blank'); if (!win) throw new Error('Jendela baru diblokir browser — izinkan popup untuk situs ini');
-    win.document.write('<p style="font-family:Arial">Menyiapkan laporan…</p>'); const rows = r.before_after; const nFoto = withPhotos ? Math.min(rows.length, EXPORT_PHOTO_MAX) : 0;
-    try { if (nFoto) await fetchPhotos(rows.slice(0, nFoto).reduce((acc, f) => acc.concat([f.foto_open, f.foto_after]), []), (d, n) => status('Mengambil foto ' + d + ' dari ' + n + '…')); } catch (e) { win.close(); throw e; }
+    win.document.write('<p style="font-family:Arial">Menyiapkan laporan…</p>'); const rows = r.before_after || [];
+    const PR = { Mendesak: 4, Tinggi: 3, Sedang: 2, Rendah: 1 };
+    const baRows = ba ? rows.slice().sort((a, b) => (PR[b.prioritas] || 0) - (PR[a.prioritas] || 0) || String(b.timestamp_close).localeCompare(String(a.timestamp_close))).slice(0, BA_FOTO_MAX) : [];
+    const nFoto = ba ? 0 : withPhotos ? Math.min(rows.length, EXPORT_PHOTO_MAX) : 0;
+    const fotoRows = ba ? baRows : rows.slice(0, nFoto);
+    try { if (fotoRows.length) await fetchPhotos(fotoRows.reduce((acc, f) => acc.concat([f.foto_open, f.foto_after]), []), (d, n) => status('Mengambil foto ' + d + ' dari ' + n + '…')); } catch (e) { win.close(); throw e; }
     const cfg = S.boot.config; const img = id => S.cache[id] ? '<img src="' + S.cache[id] + '">' : '<div class="noimg">tanpa foto</div>'; const lg = printLogos();
+    const unduh = new Date().toLocaleString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' WIB';
     const table = (heads, body) => '<table class="data"><tr>' + heads.map(h => '<th>' + esc(h) + '</th>').join('') + '</tr>' + body.map(x => '<tr>' + x.map(v => '<td>' + esc(v) + '</td>').join('') + '</tr>').join('') + '</table>';
-    const sm = reportSummary(r); const extra = '<h2>' + esc(sm.title) + '</h2>' + table(sm.heads, sm.rows) + '<p>Daftar lengkap spot-check & checklist harian tersedia di ekspor Excel.</p>';
     const bobot = '<p class="bobot">Bobot komponen: Temuan ' + esc(cfg.bobot_temuan) + '% · SLA ' + esc(cfg.bobot_sla) + '% · Spot-Check ' + esc(cfg.bobot_spotcheck) + '% · Checklist ' + esc(cfg.bobot_checklist) + '% · Kepatuhan ' + esc(cfg.bobot_kepatuhan) + '% · Predikat: ≥90 Sangat Baik · ≥75 Baik · ≥60 Perlu Perbaikan · <60 Kritis</p>';
     const page = (content, cls) => '<table class="layout' + (cls ? ' ' + cls : '') + '"><thead><tr><td><div class="hdr">' + (lg.horizon ? '<img src="' + lg.horizon + '" alt="Horizon">' : '<b>HORIZON</b>') + (lg.op ? '<img class="op" src="' + lg.op + '" alt="Operasi 3A">' : '') + '</div></td></tr></thead>'
       + '<tfoot><tr><td><div class="fspace"></div></td></tr></tfoot><tbody><tr><td>' + content + '</td></tr></tbody></table>';
     const dots = '<span class="dots">..........................................................</span>';
-    const cover = !ba ? '' : page('<div class="cover"><div class="ctitle">LAMPIRAN BERITA ACARA PEKERJAAN</div><div class="csub">Penilaian Housekeeping Quality Index (HQI)</div>'
-      + '<table class="meta"><tr><th>Nomor OK</th><td>:</td><td>' + (ba.nomor_ok ? '<b>' + esc(ba.nomor_ok) + '</b>' : dots) + '</td></tr>'
-      + '<tr><th>Nama pekerjaan</th><td>:</td><td>' + (ba.pekerjaan ? esc(ba.pekerjaan) : dots) + '</td></tr>'
-      + '<tr><th>Rekanan</th><td>:</td><td>' + esc(r.hqi[0].vendor) + '</td></tr><tr><th>Lokasi</th><td>:</td><td>' + esc(meta.pabrik) + '</td></tr>'
-      + '<tr><th>Periode</th><td>:</td><td>' + esc(tglID(r.periode.mulai)) + ' s/d ' + esc(tglID(r.periode.selesai)) + '</td></tr></table>'
-      + '<div class="hero">' + hqiHeroHtml(r.hqi[0], cfg) + '</div>' + bobot
-      + '<p class="cintro">Hasil penilaian Housekeeping Quality Index (HQI) rekanan pada periode tersebut, dengan rincian sebagaimana terlampir pada halaman berikutnya, merupakan lampiran yang tidak terpisahkan dari Berita Acara Pekerjaan.</p>'
-      + '<div class="cplace">Gresik, ' + dots + '</div>'
-      + '<div class="sign"><div class="scol"><div class="sh">Rekanan</div><div class="sorg">' + esc(r.hqi[0].vendor) + '</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div>'
-      + '<div class="scol"><div class="sh">PT Petrokimia Gresik</div><div class="sorg">' + esc(meta.pabrik) + '</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div></div></div>', 'cover-page');
-    const body = page('<h1>' + esc(reportTitle(meta)) + '</h1><p>Periode ' + esc(r.periode.mulai) + ' s/d ' + esc(r.periode.selesai) + ' · dibuat ' + esc(fmtDT(new Date().toISOString())) + ' oleh ' + esc(S.user.nama) + (ba && ba.nomor_ok ? ' · lampiran OK ' + esc(ba.nomor_ok) : '') + '</p>'
-      + '<h2>Skor HQI</h2><div class="hero' + (r.hqi.length > 1 ? ' multi' : '') + '">' + r.hqi.map(x => hqiHeroHtml(x, cfg)).join('') + '</div>' + bobot
-      + extra
-      + '<h2>Temuan selesai (before → after): ' + rows.length + '</h2><table class="data"><tr><th>No</th><th>Kategori / Zona</th><th>Prioritas</th><th>Open → Close</th><th>TTR</th>' + (nFoto ? '<th>Before → After</th>' : '') + '</tr>'
-      + rows.map((f, i) => '<tr><td>' + (i + 1) + '</td><td><b>' + esc(f.kategori) + '</b><br>' + esc(zonaName(f.zona_id)) + '</td><td>' + esc(f.prioritas) + '</td><td>' + esc(fmtDT(f.timestamp_open)) + '<br>' + esc(fmtDT(f.timestamp_close)) + '</td><td>' + esc(fmtMin(f.ttr_menit)) + '</td>' + (nFoto ? '<td>' + (i < nFoto ? '<div class="ba">' + img(f.foto_open) + img(f.foto_after) + '</div>' : '') + '</td>' : '') + '</tr>').join('') + '</table>'
-      + (withPhotos && rows.length > nFoto ? '<p>Catatan: foto hanya disertakan untuk ' + nFoto + ' temuan pertama.</p>' : ''));
+    let docs;
+    if (ba) {
+      const x = r.hqi[0];
+      const cover = page('<div class="cover"><div class="ctitle">LAMPIRAN BERITA ACARA PEKERJAAN</div><div class="csub">Penilaian Housekeeping Quality Index (HQI)</div>'
+        + '<table class="meta"><tr><th>Nomor OK</th><td>:</td><td>' + (ba.nomor_ok ? '<b>' + esc(ba.nomor_ok) + '</b>' : dots) + '</td></tr>'
+        + '<tr><th>Nama pekerjaan</th><td>:</td><td>' + (ba.pekerjaan ? esc(ba.pekerjaan) : dots) + '</td></tr>'
+        + '<tr><th>Rekanan</th><td>:</td><td>' + esc(x.vendor) + '</td></tr><tr><th>Lokasi</th><td>:</td><td>' + esc(meta.pabrik) + '</td></tr>'
+        + '<tr><th>Periode</th><td>:</td><td>' + esc(tglID(r.periode.mulai)) + ' s/d ' + esc(tglID(r.periode.selesai)) + '</td></tr></table>'
+        + '<div class="hero">' + hqiHeroHtml(x, cfg) + '</div>'
+        + '<div class="rk-title">Ringkasan penilaian</div><table class="data rk"><tr><th>Komponen</th><th>Bobot</th><th>Ringkasan</th><th>Skor</th></tr>'
+        + baRingkasRows(x, rows.length).map(([nama, bk, teks, skor]) => '<tr><td><b>' + esc(nama) + '</b></td><td>' + esc(nz(cfg[bk], 0)) + '%</td><td>' + esc(teks) + '</td><td class="num">' + esc(nz(skor)) + '</td></tr>').join('')
+        + '<tr class="tot"><td colspan="3"><b>Skor HQI</b> · ' + esc(nz(x.grade, '-')) + '</td><td class="num"><b>' + esc(nz(x.hqi_final)) + '</b></td></tr></table>'
+        + '<p class="cintro">Hasil penilaian Housekeeping Quality Index (HQI) rekanan pada periode tersebut, beserta dokumentasi foto before/after pada halaman berikutnya, merupakan lampiran yang tidak terpisahkan dari Berita Acara Pekerjaan.</p>'
+        + '<div class="cplace">Gresik, ' + dots + '</div>'
+        + '<div class="sign"><div class="scol"><div class="sh">Rekanan</div><div class="sorg">' + esc(x.vendor) + '</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div>'
+        + '<div class="scol"><div class="sh">PT Petrokimia Gresik</div><div class="sorg"></div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div></div></div>', 'brk');
+      // halaman foto: 8 temuan per halaman (4 baris × 2), maks. 2 halaman → total maks. 3 halaman
+      const fig = (id, lab) => '<figure>' + (S.cache[id] ? '<img src="' + S.cache[id] + '">' : '<div class="noimg">tanpa foto</div>') + '<figcaption>' + lab + '</figcaption></figure>';
+      const card = (f, i) => '<div class="pcard"><div class="pph">' + fig(f.foto_open, 'Before') + fig(f.foto_after, 'After') + '</div><div class="pcap"><b>' + (i + 1) + '. ' + esc(f.kategori) + ' — ' + esc(zonaName(f.zona_id)) + '</b><br>' + esc(f.prioritas) + ' · selesai ' + esc(fmtDT(f.timestamp_close)) + ' · TTR ' + esc(fmtMin(f.ttr_menit)) + '</div></div>';
+      const chunks = []; for (let i = 0; i < baRows.length; i += BA_FOTO_PER_HAL) chunks.push(baRows.slice(i, i + BA_FOTO_PER_HAL));
+      const note = rows.length > baRows.length ? ' · menampilkan ' + baRows.length + ' dari ' + rows.length + ' temuan selesai (prioritas tertinggi & terbaru); daftar lengkap di laporan biasa / Excel' : '';
+      const photoPages = chunks.length ? chunks.map((ch, pi) => page('<h2 class="ptitle">Dokumentasi temuan selesai (before → after)' + (pi ? ' — lanjutan' : '') + '</h2>'
+        + (pi ? '' : '<p class="psub">' + esc(x.vendor) + ' · ' + esc(tglID(r.periode.mulai)) + ' s/d ' + esc(tglID(r.periode.selesai)) + ' · ' + rows.length + ' temuan selesai' + esc(note) + '</p>')
+        + '<div class="pgrid">' + ch.map((f, i) => card(f, pi * BA_FOTO_PER_HAL + i)).join('') + '</div>', pi < chunks.length - 1 ? 'brk' : '')).join('')
+        : page('<h2 class="ptitle">Dokumentasi temuan selesai (before → after)</h2><p class="psub">Tidak ada temuan yang selesai (Close) pada periode ini.</p>');
+      docs = cover + photoPages;
+    } else {
+      const sm = reportSummary(r);
+      docs = page('<h1>' + esc(reportTitle(meta)) + '</h1><p>Periode ' + esc(r.periode.mulai) + ' s/d ' + esc(r.periode.selesai) + ' · dibuat oleh ' + esc(S.user.nama) + '</p>'
+        + '<h2>Skor HQI</h2><div class="hero' + (r.hqi.length > 1 ? ' multi' : '') + '">' + r.hqi.map(x => hqiHeroHtml(x, cfg)).join('') + '</div>' + bobot
+        + '<h2>' + esc(sm.title) + '</h2>' + table(sm.heads, sm.rows) + '<p>Daftar lengkap spot-check & checklist harian tersedia di ekspor Excel.</p>'
+        + '<h2>Temuan selesai (before → after): ' + rows.length + '</h2><table class="data"><tr><th>No</th><th>Kategori / Zona</th><th>Prioritas</th><th>Open → Close</th><th>TTR</th>' + (nFoto ? '<th>Before → After</th>' : '') + '</tr>'
+        + rows.map((f, i) => '<tr><td>' + (i + 1) + '</td><td><b>' + esc(f.kategori) + '</b><br>' + esc(zonaName(f.zona_id)) + '</td><td>' + esc(f.prioritas) + '</td><td>' + esc(fmtDT(f.timestamp_open)) + '<br>' + esc(fmtDT(f.timestamp_close)) + '</td><td>' + esc(fmtMin(f.ttr_menit)) + '</td>' + (nFoto ? '<td>' + (i < nFoto ? '<div class="ba">' + img(f.foto_open) + img(f.foto_after) + '</div>' : '') + '</td>' : '') + '</tr>').join('') + '</table>'
+        + (withPhotos && rows.length > nFoto ? '<p>Catatan: foto hanya disertakan untuk ' + nFoto + ' temuan pertama.</p>' : ''));
+    }
     const html = '<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8"><title>' + esc((ba ? 'Lampiran BA ' + (ba.nomor_ok ? ba.nomor_ok + ' — ' : '') : '') + reportTitle(meta)) + ' ' + esc(r.periode.mulai) + ' s/d ' + esc(r.periode.selesai) + '</title><style>'
       + '*{-webkit-print-color-adjust:exact;print-color-adjust:exact}body{font-family:Arial,sans-serif;color:#111;margin:24px;font-size:12px}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:18px 0 6px}p{margin:2px 0;color:#444}'
-      + 'table.data{border-collapse:collapse;width:100%}table.data th,table.data td{border:1px solid #bbb;padding:5px 6px;text-align:left;vertical-align:top}table.data th{background:#1F3A5F;color:#fff}'
-      + 'table.layout{width:100%;border-collapse:collapse}table.layout>thead>tr>td,table.layout>tfoot>tr>td,table.layout>tbody>tr>td{padding:0;border:0}table.cover-page{break-after:page;page-break-after:always}'
+      + 'table.data{border-collapse:collapse;width:100%}table.data th,table.data td{border:1px solid #bbb;padding:5px 6px;text-align:left;vertical-align:top}table.data th{background:#1F3A5F;color:#fff}table.data tr{page-break-inside:avoid}'
+      + 'table.layout{width:100%;border-collapse:collapse}table.layout>thead>tr>td,table.layout>tfoot>tr>td,table.layout>tbody>tr>td{padding:0;border:0}table.layout.brk{break-after:page;page-break-after:always}'
       + '.hdr{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:2px solid #1F3A5F;padding:0 0 8px;margin-bottom:12px}.hdr img{height:38px;max-width:46%;object-fit:contain}.hdr img.op{height:34px}'
-      + '.pfoot{display:flex;justify-content:space-between;font-size:10px;color:#555;border-top:1px solid #bbb;padding-top:4px;margin-top:14px}.fspace{height:26px}'
+      + '.pfoot{display:flex;justify-content:space-between;gap:10px;font-size:10px;color:#555;border-top:1px solid #bbb;padding-top:4px;margin-top:14px}.pfoot .mid{text-align:center;flex:1}.fspace{height:18mm}'
       // kartu skor HQI (v1.17.3)
       + '.hero{display:grid;grid-template-columns:1fr;gap:10px;margin:8px 0 6px}.hero.multi{grid-template-columns:1fr 1fr}'
       + '.hcard{display:flex;gap:14px;align-items:stretch;border:2px solid var(--g);border-radius:12px;overflow:hidden;page-break-inside:avoid;break-inside:avoid}'
@@ -1532,15 +1570,21 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       + '.hright{flex:1;padding:10px 12px 10px 0;min-width:0}.hvendor{font-size:15px;font-weight:700;margin-bottom:6px}'
       + '.hrow{display:grid;grid-template-columns:150px 1fr 38px;gap:8px;align-items:center;font-size:11px;margin:3px 0}.hn i{color:#777;font-style:normal}.hero.multi .hrow{grid-template-columns:118px 1fr 34px;font-size:10px}'
       + '.hbar{height:8px;background:#E5E7EB;border-radius:99px;overflow:hidden}.hbar b{display:block;height:100%;background:var(--g)}.hv{text-align:right;font-weight:700}.hnote{font-size:10px;color:#555;margin-top:6px}.bobot{font-size:10.5px;color:#555}'
-      // halaman depan lampiran berita acara (v1.17.3)
-      + '.cover{padding-top:6px}.ctitle{text-align:center;font-size:19px;font-weight:800;letter-spacing:.04em;color:#1F3A5F}.csub{text-align:center;font-size:12.5px;color:#444;margin:2px 0 16px}'
-      + 'table.meta{border-collapse:collapse;margin:0 0 14px;font-size:12.5px}table.meta th{text-align:left;font-weight:600;padding:4px 10px 4px 0;white-space:nowrap;vertical-align:top}table.meta td{padding:4px 6px 4px 0;vertical-align:top}.dots{color:#999;letter-spacing:1px}'
-      + '.cintro{margin:14px 0 0;color:#222;line-height:1.5;text-align:justify}.cplace{margin:22px 0 6px;text-align:right}'
-      + '.sign{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:6px;page-break-inside:avoid;break-inside:avoid}.scol{text-align:center;border:1px solid #CBD5E1;border-radius:10px;padding:12px 10px}.sh{font-weight:700;font-size:13px}.sorg{font-size:11.5px;color:#444;min-height:16px}.sspace{height:84px}.sname{font-size:12px}.sjab{font-size:10.5px;color:#666;margin-top:2px}'
-      + '.ba{display:flex;gap:6px}.ba img,.noimg{width:150px;height:112px;object-fit:cover;border:1px solid #ccc}.noimg{display:flex;align-items:center;justify-content:center;color:#999;font-size:10px}table.data tr{page-break-inside:avoid}'
-      + '@media print{body{margin:0}@page{margin:10mm 10mm 12mm}.noprint{display:none}.pfoot{position:fixed;left:0;right:0;bottom:0;margin:0;background:#fff}}@media screen{.fspace{display:none}table.cover-page{border-bottom:2px dashed #bbb;margin-bottom:18px}}'
+      // lampiran berita acara: halaman depan (v1.17.3) + ringkasan & halaman foto (v1.17.4)
+      + '.cover{padding-top:2px}.ctitle{text-align:center;font-size:19px;font-weight:800;letter-spacing:.04em;color:#1F3A5F}.csub{text-align:center;font-size:12.5px;color:#444;margin:2px 0 12px}'
+      + 'table.meta{border-collapse:collapse;margin:0 0 10px;font-size:12.5px}table.meta th{text-align:left;font-weight:600;padding:3px 10px 3px 0;white-space:nowrap;vertical-align:top}table.meta td{padding:3px 6px 3px 0;vertical-align:top}.dots{color:#999;letter-spacing:1px}'
+      + '.rk-title{font-weight:700;font-size:12.5px;margin:10px 0 4px;color:#1F3A5F}table.rk{font-size:10.5px}table.rk th,table.rk td{padding:4px 6px}table.rk td.num{text-align:right;white-space:nowrap;width:44px}table.rk tr.tot td{background:#EEF2F7}'
+      + '.cintro{margin:10px 0 0;color:#222;line-height:1.45;text-align:justify;font-size:11.5px}.cplace{margin:14px 0 6px;text-align:right}'
+      + '.sign{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:4px;page-break-inside:avoid;break-inside:avoid}.scol{text-align:center;border:1px solid #CBD5E1;border-radius:10px;padding:10px}.sh{font-weight:700;font-size:13px}.sorg{font-size:11.5px;color:#444;min-height:16px}.sspace{height:70px}.sname{font-size:12px}.sjab{font-size:10.5px;color:#666;margin-top:2px}'
+      + '.ptitle{margin:0 0 2px}.psub{font-size:11px;margin-bottom:8px}.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}'
+      + '.pcard{border:1px solid #CBD5E1;border-radius:8px;padding:6px;break-inside:avoid;page-break-inside:avoid}.pph{display:grid;grid-template-columns:1fr 1fr;gap:5px}'
+      + 'figure{margin:0}figure img,figure .noimg{width:100%;height:118px;object-fit:cover;border-radius:4px;display:block;border:1px solid #ddd}figcaption{font-size:9.5px;color:#555;text-align:center;margin-top:1px}.pcap{font-size:10px;line-height:1.35;margin-top:4px}'
+      + '.ba{display:flex;gap:6px}.ba img,.noimg{width:150px;height:112px;object-fit:cover;border:1px solid #ccc}.noimg{display:flex;align-items:center;justify-content:center;color:#999;font-size:10px}'
+      // v1.17.4: margin halaman 0 → browser tidak mencetak tanggal/judul/"about:blank"; jarak tepi dari padding & ruang kepala/kaki sendiri
+      + '@media print{@page{size:A4;margin:0}body{margin:0;padding:0 11mm}table.layout>thead>tr>td{padding-top:9mm!important}.noprint{display:none}.pfoot{position:fixed;left:11mm;right:11mm;bottom:7mm;margin:0;background:#fff}}'
+      + '@media screen{.fspace{display:none}table.layout.brk{border-bottom:2px dashed #bbb;margin-bottom:18px}}'
       + '</style></head><body><div class="noprint" style="margin-bottom:10px"><button onclick="window.print()" style="padding:8px 14px;font-weight:bold">Cetak / Simpan sebagai PDF</button></div>'
-      + cover + body + '<div class="pfoot"><span>Operasi Pabrik III A</span><span>Petrokimia Gresik</span></div></body></html>';
+      + docs + '<div class="pfoot"><span>Operasi Pabrik III A</span><span class="mid">Diunduh ' + esc(unduh) + '</span><span>Petrokimia Gresik</span></div></body></html>';
     win.document.open(); win.document.write(html); win.document.close(); status(''); setTimeout(() => { try { win.focus(); win.print(); } catch (e) { } }, 800); }
   /**
    * v1.17: dasar perhitungan tiap komponen HQI dari computeHQI.rincian — dipakai rincian Laporan dan popup chip skor di Beranda.
@@ -1619,7 +1663,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       const run = (fn, b2) => async () => { if (b2.disabled) return; b2.disabled = true; status('Menyiapkan…'); try { await fn(r, meta, foto.checked, status); status('Selesai.'); } catch (err) { status(''); toast(err.message, true); } b2.disabled = false; };
       const bx = el('button', { class: 'btn sm' }, 'Ekspor Excel (.xlsx)'), bp = el('button', { class: 'btn sm' }, 'Cetak / Simpan PDF'); bx.addEventListener('click', run(exportReportExcel, bx)); bp.addEventListener('click', run(printReport, bp));
       const bba = el('button', { class: 'btn sm primary', onclick: () => openBaForm(r, meta, foto.checked, status) }, 'Lampiran Berita Acara');   /* v1.17.3 */
-      exportSlot.replaceChildren(el('div', { class: 'card form export-card' }, el('div', { class: 'section-head' }, el('h3', {}, 'Ekspor laporan'), st), el('label', { class: 'toggle' }, foto, 'Sertakan foto before/after (maks. ' + EXPORT_PHOTO_MAX + ' temuan; lebih lambat)'), el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, bx, bp, bba), el('p', { class: 'hint' }, 'Lampiran Berita Acara = PDF dengan halaman depan (Nomor OK, nama pekerjaan, periode, skor HQI, tanda tangan Rekanan & PT Petrokimia Gresik) + laporan lengkap; untuk satu vendor.')));
+      exportSlot.replaceChildren(el('div', { class: 'card form export-card' }, el('div', { class: 'section-head' }, el('h3', {}, 'Ekspor laporan'), st), el('label', { class: 'toggle' }, foto, 'Sertakan foto before/after (maks. ' + EXPORT_PHOTO_MAX + ' temuan; lebih lambat)'), el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, bx, bp, bba), el('p', { class: 'hint' }, 'Lampiran Berita Acara = PDF maks. 3 halaman untuk satu vendor: halaman depan (Nomor OK, nama pekerjaan, periode, skor & ringkasan HQI, tanda tangan) + foto before/after temuan selesai (selalu disertakan).')));
       out.replaceChildren(el('div', { class: 'card' }, el('h3', {}, 'Skor HQI ' + r.periode.mulai + ' s/d ' + r.periode.selesai + ' · ' + reportTitle(meta).replace('Laporan HQI — ', '')), tbl), hqiDetailCards(r), ...extra, el('div', { class: 'section-head' }, el('h3', {}, 'Temuan selesai (Before → After): ' + r.before_after.length)), r.before_after.length ? list : el('p', { class: 'empty' }, 'Tidak ada temuan Close pada periode ini')); } catch (err) { if (my === reqSeq) out.replaceChildren(el('p', { class: 'empty err' }, err.message)); } });
   };
 
