@@ -1459,36 +1459,88 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   function printLogos() { const css = Array.from(document.querySelectorAll('style')).map(s => s.textContent).join('\n');
     const pick = name => { const m = css.match(new RegExp('html\\[data-theme="light"\\]\\{[^}]*--' + name + ':url\\("([^"]+)"\\)')); return m ? m[1] : ''; };
     return { horizon: pick('logo-utama'), op: pick('logo-op') }; }
+  const GRADE_COLOR = { 'Sangat Baik': '#059669', 'Baik': '#2563EB', 'Perlu Perbaikan': '#D97706', 'Kritis': '#DC2626' };
+  const tglID = iso => { const d = new Date(String(iso).slice(0, 10) + 'T00:00:00'); return isNaN(d) ? String(iso || '-') : d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }); };
+  /**
+   * v1.17.3: kartu skor HQI besar untuk cetak/PDF (permintaan Rudy: skor HQI harus menonjol) — angka HQI besar di blok berwarna predikat
+   * (Sangat Baik hijau, Baik biru, Perlu Perbaikan oranye, Kritis merah) + batang skor tiap komponen dengan bobotnya.
+   */
+  function hqiHeroHtml(x, cfg) { const c = GRADE_COLOR[x.grade] || '#1F3A5F';
+    return '<div class="hcard" style="--g:' + c + '"><div class="hleft"><div class="hlabel">Skor HQI</div><div class="hnum">' + esc(nz(x.hqi_final)) + '</div><div class="hgrade">' + esc(nz(x.grade, '-')) + '</div></div>'
+      + '<div class="hright"><div class="hvendor">' + esc(x.vendor) + '</div>'
+      + hqiBasis(x).map(b => '<div class="hrow"><span class="hn">' + esc(b.nama) + ' <i>' + esc(nz(cfg[b.bobot], 0)) + '%</i></span><span class="hbar"><b style="width:' + Math.max(0, Math.min(100, Number(nz(b.skor, 0)) || 0)) + '%"></b></span><span class="hv">' + esc(nz(b.skor)) + '</span></div>').join('')
+      + (x.catatan ? '<div class="hnote">' + esc(x.catatan) + '</div>' : '') + '</div></div>'; }
+  /**
+   * v1.17.3: form Lampiran Berita Acara Pekerjaan — Nomor OK & nama pekerjaan (teks bebas, boleh kosong → titik-titik untuk diisi tangan),
+   * diingat per vendor di perangkat (localStorage, kemudahan saja). Hanya untuk laporan satu vendor (kolom tanda tangan Rekanan butuh satu nama).
+   */
+  function openBaForm(r, meta, withPhotos, status) {
+    if ((r.hqi || []).length !== 1) return toast('Lampiran berita acara dibuat per rekanan — pilih satu vendor di filter lalu tekan Tampilkan', true);
+    const h = r.hqi[0]; const key = 'hz_ba:' + (h.vendor_id || meta.vendor); let last = {}; try { last = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (e) { }
+    const ok = el('input', { type: 'text', placeholder: 'mis. 1234/OK/PG/2026', value: last.nomor_ok || '' }); const pk = el('textarea', { rows: 2, placeholder: 'mis. Jasa Kebersihan & Housekeeping Area Pabrik ZA II' }); pk.value = last.pekerjaan || '';
+    const btn = el('button', { class: 'btn primary' }, 'Cetak / Simpan PDF lampiran');
+    btn.addEventListener('click', () => { const ba = { nomor_ok: ok.value.trim(), pekerjaan: pk.value.trim() }; try { localStorage.setItem(key, JSON.stringify(ba)); } catch (e) { }
+      closeModal(); status('Menyiapkan…'); printReport(r, meta, withPhotos, status, ba).then(() => status('Selesai.'), err => { status(''); toast(err.message, true); }); });
+    modal(el('div', { class: 'form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Lampiran Berita Acara Pekerjaan'), el('a', { class: 'link', onclick: closeModal }, 'Tutup')),
+      el('p', { class: 'hint' }, 'Halaman depan berisi Nomor OK, nama pekerjaan, periode, skor HQI, dan kolom tanda tangan Rekanan & PT Petrokimia Gresik; halaman berikutnya laporan HQI lengkap. Kolom yang dikosongkan dicetak sebagai titik-titik untuk diisi tangan.'),
+      fld('Nomor OK', ok), fld('Nama pekerjaan', pk),
+      el('p', { class: 'hint' }, 'Rekanan: ' + h.vendor + ' · Lokasi: ' + meta.pabrik + ' · Periode ' + tglID(r.periode.mulai) + ' s/d ' + tglID(r.periode.selesai) + (withPhotos ? ' · dengan foto before/after' : '')), btn));
+    setTimeout(() => (ok.value ? pk : ok).focus(), 50);
+  }
   /**
    * Cetak / simpan PDF: halaman laporan dibuka di jendela baru lalu dialog cetak browser (pilih "Simpan sebagai PDF").
-   * v1.17: kepala = logo Horizon (kiri) & Operasi 3A (kanan); kaki = "Operasi Pabrik III A" (kiri) & "Petrokimia Gresik" (kanan) — keduanya
-   * di <thead>/<tfoot> tabel tata letak sehingga berulang di setiap halaman cetak; + tabel spot-check, checklist harian, kepatuhan.
+   * v1.17: kepala = logo Horizon (kiri) & Operasi 3A (kanan); kaki = "Operasi Pabrik III A" (kiri) & "Petrokimia Gresik" (kanan), berulang tiap halaman.
+   * v1.17.3: skor HQI ditonjolkan (hqiHeroHtml); ba = {nomor_ok, pekerjaan} → halaman depan Lampiran Berita Acara (satu halaman, lalu pindah halaman).
    */
-  async function printReport(r, meta, withPhotos, status) { const win = window.open('', '_blank'); if (!win) throw new Error('Jendela baru diblokir browser — izinkan popup untuk situs ini');
+  async function printReport(r, meta, withPhotos, status, ba) { const win = window.open('', '_blank'); if (!win) throw new Error('Jendela baru diblokir browser — izinkan popup untuk situs ini');
     win.document.write('<p style="font-family:Arial">Menyiapkan laporan…</p>'); const rows = r.before_after; const nFoto = withPhotos ? Math.min(rows.length, EXPORT_PHOTO_MAX) : 0;
     try { if (nFoto) await fetchPhotos(rows.slice(0, nFoto).reduce((acc, f) => acc.concat([f.foto_open, f.foto_after]), []), (d, n) => status('Mengambil foto ' + d + ' dari ' + n + '…')); } catch (e) { win.close(); throw e; }
     const cfg = S.boot.config; const img = id => S.cache[id] ? '<img src="' + S.cache[id] + '">' : '<div class="noimg">tanpa foto</div>'; const lg = printLogos();
     const table = (heads, body) => '<table class="data"><tr>' + heads.map(h => '<th>' + esc(h) + '</th>').join('') + '</tr>' + body.map(x => '<tr>' + x.map(v => '<td>' + esc(v) + '</td>').join('') + '</tr>').join('') + '</table>';
     const sm = reportSummary(r); const extra = '<h2>' + esc(sm.title) + '</h2>' + table(sm.heads, sm.rows) + '<p>Daftar lengkap spot-check & checklist harian tersedia di ekspor Excel.</p>';
-    const html = '<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8"><title>' + esc(reportTitle(meta)) + ' ' + esc(r.periode.mulai) + ' s/d ' + esc(r.periode.selesai) + '</title><style>'
-      + 'body{font-family:Arial,sans-serif;color:#111;margin:24px;font-size:12px}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:18px 0 6px}p{margin:2px 0;color:#444}'
-      + 'table.data{border-collapse:collapse;width:100%}table.data th,table.data td{border:1px solid #bbb;padding:5px 6px;text-align:left;vertical-align:top}table.data th{background:#1F3A5F;color:#fff}'
-      + 'table.layout{width:100%;border-collapse:collapse}table.layout>thead>tr>td,table.layout>tfoot>tr>td,table.layout>tbody>tr>td{padding:0;border:0}'
-      + '.hdr{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:2px solid #1F3A5F;padding:0 0 8px;margin-bottom:12px}.hdr img{height:38px;max-width:46%;object-fit:contain}.hdr img.op{height:34px}'
-      + '.pfoot{display:flex;justify-content:space-between;font-size:10px;color:#555;border-top:1px solid #bbb;padding-top:4px;margin-top:14px}.fspace{height:26px}'
-      + '.ba{display:flex;gap:6px}.ba img,.noimg{width:150px;height:112px;object-fit:cover;border:1px solid #ccc}.noimg{display:flex;align-items:center;justify-content:center;color:#999;font-size:10px}table.data tr{page-break-inside:avoid}'
-      + '@media print{body{margin:0}@page{margin:10mm 10mm 12mm}.noprint{display:none}.pfoot{position:fixed;left:0;right:0;bottom:0;margin:0;background:#fff}}@media screen{.fspace{display:none}}'
-      + '</style></head><body><div class="noprint" style="margin-bottom:10px"><button onclick="window.print()" style="padding:8px 14px;font-weight:bold">Cetak / Simpan sebagai PDF</button></div>'
-      + '<table class="layout"><thead><tr><td><div class="hdr">' + (lg.horizon ? '<img src="' + lg.horizon + '" alt="Horizon">' : '<b>HORIZON</b>') + (lg.op ? '<img class="op" src="' + lg.op + '" alt="Operasi 3A">' : '') + '</div></td></tr></thead>'
-      + '<tfoot><tr><td><div class="fspace"></div></td></tr></tfoot><tbody><tr><td>'
-      + '<h1>' + esc(reportTitle(meta)) + '</h1><p>Periode ' + esc(r.periode.mulai) + ' s/d ' + esc(r.periode.selesai) + ' · dibuat ' + esc(fmtDT(new Date().toISOString())) + ' oleh ' + esc(S.user.nama) + '</p>'
-      + '<h2>Skor HQI per vendor</h2>' + table(['Vendor', 'Temuan', 'SLA', 'Spot-Check', 'Checklist', 'Kepatuhan', 'HQI', 'Predikat', 'Catatan'], r.hqi.map(x => [x.vendor, x.skor_temuan, x.skor_sla, x.skor_spotcheck, x.skor_checklist, x.skor_kepatuhan, x.hqi_final, x.grade, x.catatan || '']))
-      + '<p>Bobot: Temuan ' + esc(cfg.bobot_temuan) + '% · SLA ' + esc(cfg.bobot_sla) + '% · Spot-Check ' + esc(cfg.bobot_spotcheck) + '% · Checklist ' + esc(cfg.bobot_checklist) + '% · Kepatuhan ' + esc(cfg.bobot_kepatuhan) + '%</p>'
+    const bobot = '<p class="bobot">Bobot komponen: Temuan ' + esc(cfg.bobot_temuan) + '% · SLA ' + esc(cfg.bobot_sla) + '% · Spot-Check ' + esc(cfg.bobot_spotcheck) + '% · Checklist ' + esc(cfg.bobot_checklist) + '% · Kepatuhan ' + esc(cfg.bobot_kepatuhan) + '% · Predikat: ≥90 Sangat Baik · ≥75 Baik · ≥60 Perlu Perbaikan · <60 Kritis</p>';
+    const page = (content, cls) => '<table class="layout' + (cls ? ' ' + cls : '') + '"><thead><tr><td><div class="hdr">' + (lg.horizon ? '<img src="' + lg.horizon + '" alt="Horizon">' : '<b>HORIZON</b>') + (lg.op ? '<img class="op" src="' + lg.op + '" alt="Operasi 3A">' : '') + '</div></td></tr></thead>'
+      + '<tfoot><tr><td><div class="fspace"></div></td></tr></tfoot><tbody><tr><td>' + content + '</td></tr></tbody></table>';
+    const dots = '<span class="dots">..........................................................</span>';
+    const cover = !ba ? '' : page('<div class="cover"><div class="ctitle">LAMPIRAN BERITA ACARA PEKERJAAN</div><div class="csub">Penilaian Housekeeping Quality Index (HQI)</div>'
+      + '<table class="meta"><tr><th>Nomor OK</th><td>:</td><td>' + (ba.nomor_ok ? '<b>' + esc(ba.nomor_ok) + '</b>' : dots) + '</td></tr>'
+      + '<tr><th>Nama pekerjaan</th><td>:</td><td>' + (ba.pekerjaan ? esc(ba.pekerjaan) : dots) + '</td></tr>'
+      + '<tr><th>Rekanan</th><td>:</td><td>' + esc(r.hqi[0].vendor) + '</td></tr><tr><th>Lokasi</th><td>:</td><td>' + esc(meta.pabrik) + '</td></tr>'
+      + '<tr><th>Periode</th><td>:</td><td>' + esc(tglID(r.periode.mulai)) + ' s/d ' + esc(tglID(r.periode.selesai)) + '</td></tr></table>'
+      + '<div class="hero">' + hqiHeroHtml(r.hqi[0], cfg) + '</div>' + bobot
+      + '<p class="cintro">Hasil penilaian Housekeeping Quality Index (HQI) rekanan pada periode tersebut, dengan rincian sebagaimana terlampir pada halaman berikutnya, merupakan lampiran yang tidak terpisahkan dari Berita Acara Pekerjaan.</p>'
+      + '<div class="cplace">Gresik, ' + dots + '</div>'
+      + '<div class="sign"><div class="scol"><div class="sh">Rekanan</div><div class="sorg">' + esc(r.hqi[0].vendor) + '</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div>'
+      + '<div class="scol"><div class="sh">PT Petrokimia Gresik</div><div class="sorg">' + esc(meta.pabrik) + '</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div></div></div>', 'cover-page');
+    const body = page('<h1>' + esc(reportTitle(meta)) + '</h1><p>Periode ' + esc(r.periode.mulai) + ' s/d ' + esc(r.periode.selesai) + ' · dibuat ' + esc(fmtDT(new Date().toISOString())) + ' oleh ' + esc(S.user.nama) + (ba && ba.nomor_ok ? ' · lampiran OK ' + esc(ba.nomor_ok) : '') + '</p>'
+      + '<h2>Skor HQI</h2><div class="hero' + (r.hqi.length > 1 ? ' multi' : '') + '">' + r.hqi.map(x => hqiHeroHtml(x, cfg)).join('') + '</div>' + bobot
       + extra
       + '<h2>Temuan selesai (before → after): ' + rows.length + '</h2><table class="data"><tr><th>No</th><th>Kategori / Zona</th><th>Prioritas</th><th>Open → Close</th><th>TTR</th>' + (nFoto ? '<th>Before → After</th>' : '') + '</tr>'
       + rows.map((f, i) => '<tr><td>' + (i + 1) + '</td><td><b>' + esc(f.kategori) + '</b><br>' + esc(zonaName(f.zona_id)) + '</td><td>' + esc(f.prioritas) + '</td><td>' + esc(fmtDT(f.timestamp_open)) + '<br>' + esc(fmtDT(f.timestamp_close)) + '</td><td>' + esc(fmtMin(f.ttr_menit)) + '</td>' + (nFoto ? '<td>' + (i < nFoto ? '<div class="ba">' + img(f.foto_open) + img(f.foto_after) + '</div>' : '') + '</td>' : '') + '</tr>').join('') + '</table>'
-      + (withPhotos && rows.length > nFoto ? '<p>Catatan: foto hanya disertakan untuk ' + nFoto + ' temuan pertama.</p>' : '')
-      + '</td></tr></tbody></table><div class="pfoot"><span>Operasi Pabrik III A</span><span>Petrokimia Gresik</span></div></body></html>';
+      + (withPhotos && rows.length > nFoto ? '<p>Catatan: foto hanya disertakan untuk ' + nFoto + ' temuan pertama.</p>' : ''));
+    const html = '<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8"><title>' + esc((ba ? 'Lampiran BA ' + (ba.nomor_ok ? ba.nomor_ok + ' — ' : '') : '') + reportTitle(meta)) + ' ' + esc(r.periode.mulai) + ' s/d ' + esc(r.periode.selesai) + '</title><style>'
+      + '*{-webkit-print-color-adjust:exact;print-color-adjust:exact}body{font-family:Arial,sans-serif;color:#111;margin:24px;font-size:12px}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:18px 0 6px}p{margin:2px 0;color:#444}'
+      + 'table.data{border-collapse:collapse;width:100%}table.data th,table.data td{border:1px solid #bbb;padding:5px 6px;text-align:left;vertical-align:top}table.data th{background:#1F3A5F;color:#fff}'
+      + 'table.layout{width:100%;border-collapse:collapse}table.layout>thead>tr>td,table.layout>tfoot>tr>td,table.layout>tbody>tr>td{padding:0;border:0}table.cover-page{break-after:page;page-break-after:always}'
+      + '.hdr{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:2px solid #1F3A5F;padding:0 0 8px;margin-bottom:12px}.hdr img{height:38px;max-width:46%;object-fit:contain}.hdr img.op{height:34px}'
+      + '.pfoot{display:flex;justify-content:space-between;font-size:10px;color:#555;border-top:1px solid #bbb;padding-top:4px;margin-top:14px}.fspace{height:26px}'
+      // kartu skor HQI (v1.17.3)
+      + '.hero{display:grid;grid-template-columns:1fr;gap:10px;margin:8px 0 6px}.hero.multi{grid-template-columns:1fr 1fr}'
+      + '.hcard{display:flex;gap:14px;align-items:stretch;border:2px solid var(--g);border-radius:12px;overflow:hidden;page-break-inside:avoid;break-inside:avoid}'
+      + '.hleft{background:var(--g);color:#fff;min-width:138px;padding:14px 10px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}'
+      + '.hlabel{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;opacity:.92}.hnum{font-size:48px;font-weight:800;line-height:1.05;margin:2px 0}.hgrade{font-size:14px;font-weight:700;padding:2px 10px;border-radius:99px;background:rgba(255,255,255,.2)}'
+      + '.hright{flex:1;padding:10px 12px 10px 0;min-width:0}.hvendor{font-size:15px;font-weight:700;margin-bottom:6px}'
+      + '.hrow{display:grid;grid-template-columns:150px 1fr 38px;gap:8px;align-items:center;font-size:11px;margin:3px 0}.hn i{color:#777;font-style:normal}.hero.multi .hrow{grid-template-columns:118px 1fr 34px;font-size:10px}'
+      + '.hbar{height:8px;background:#E5E7EB;border-radius:99px;overflow:hidden}.hbar b{display:block;height:100%;background:var(--g)}.hv{text-align:right;font-weight:700}.hnote{font-size:10px;color:#555;margin-top:6px}.bobot{font-size:10.5px;color:#555}'
+      // halaman depan lampiran berita acara (v1.17.3)
+      + '.cover{padding-top:6px}.ctitle{text-align:center;font-size:19px;font-weight:800;letter-spacing:.04em;color:#1F3A5F}.csub{text-align:center;font-size:12.5px;color:#444;margin:2px 0 16px}'
+      + 'table.meta{border-collapse:collapse;margin:0 0 14px;font-size:12.5px}table.meta th{text-align:left;font-weight:600;padding:4px 10px 4px 0;white-space:nowrap;vertical-align:top}table.meta td{padding:4px 6px 4px 0;vertical-align:top}.dots{color:#999;letter-spacing:1px}'
+      + '.cintro{margin:14px 0 0;color:#222;line-height:1.5;text-align:justify}.cplace{margin:22px 0 6px;text-align:right}'
+      + '.sign{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:6px;page-break-inside:avoid;break-inside:avoid}.scol{text-align:center;border:1px solid #CBD5E1;border-radius:10px;padding:12px 10px}.sh{font-weight:700;font-size:13px}.sorg{font-size:11.5px;color:#444;min-height:16px}.sspace{height:84px}.sname{font-size:12px}.sjab{font-size:10.5px;color:#666;margin-top:2px}'
+      + '.ba{display:flex;gap:6px}.ba img,.noimg{width:150px;height:112px;object-fit:cover;border:1px solid #ccc}.noimg{display:flex;align-items:center;justify-content:center;color:#999;font-size:10px}table.data tr{page-break-inside:avoid}'
+      + '@media print{body{margin:0}@page{margin:10mm 10mm 12mm}.noprint{display:none}.pfoot{position:fixed;left:0;right:0;bottom:0;margin:0;background:#fff}}@media screen{.fspace{display:none}table.cover-page{border-bottom:2px dashed #bbb;margin-bottom:18px}}'
+      + '</style></head><body><div class="noprint" style="margin-bottom:10px"><button onclick="window.print()" style="padding:8px 14px;font-weight:bold">Cetak / Simpan sebagai PDF</button></div>'
+      + cover + body + '<div class="pfoot"><span>Operasi Pabrik III A</span><span>Petrokimia Gresik</span></div></body></html>';
     win.document.open(); win.document.write(html); win.document.close(); status(''); setTimeout(() => { try { win.focus(); win.print(); } catch (e) { } }, 800); }
   /**
    * v1.17: dasar perhitungan tiap komponen HQI dari computeHQI.rincian — dipakai rincian Laporan dan popup chip skor di Beranda.
@@ -1566,7 +1618,8 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       const foto = el('input', { type: 'checkbox' });   /* v1.17.1: bawaan tanpa foto agar PDF ringkas */ const st = el('span', { class: 'hint' }); const status = t => { st.textContent = t; };
       const run = (fn, b2) => async () => { if (b2.disabled) return; b2.disabled = true; status('Menyiapkan…'); try { await fn(r, meta, foto.checked, status); status('Selesai.'); } catch (err) { status(''); toast(err.message, true); } b2.disabled = false; };
       const bx = el('button', { class: 'btn sm' }, 'Ekspor Excel (.xlsx)'), bp = el('button', { class: 'btn sm' }, 'Cetak / Simpan PDF'); bx.addEventListener('click', run(exportReportExcel, bx)); bp.addEventListener('click', run(printReport, bp));
-      exportSlot.replaceChildren(el('div', { class: 'card form export-card' }, el('div', { class: 'section-head' }, el('h3', {}, 'Ekspor laporan'), st), el('label', { class: 'toggle' }, foto, 'Sertakan foto before/after (maks. ' + EXPORT_PHOTO_MAX + ' temuan; lebih lambat)'), el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, bx, bp)));
+      const bba = el('button', { class: 'btn sm primary', onclick: () => openBaForm(r, meta, foto.checked, status) }, 'Lampiran Berita Acara');   /* v1.17.3 */
+      exportSlot.replaceChildren(el('div', { class: 'card form export-card' }, el('div', { class: 'section-head' }, el('h3', {}, 'Ekspor laporan'), st), el('label', { class: 'toggle' }, foto, 'Sertakan foto before/after (maks. ' + EXPORT_PHOTO_MAX + ' temuan; lebih lambat)'), el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, bx, bp, bba), el('p', { class: 'hint' }, 'Lampiran Berita Acara = PDF dengan halaman depan (Nomor OK, nama pekerjaan, periode, skor HQI, tanda tangan Rekanan & PT Petrokimia Gresik) + laporan lengkap; untuk satu vendor.')));
       out.replaceChildren(el('div', { class: 'card' }, el('h3', {}, 'Skor HQI ' + r.periode.mulai + ' s/d ' + r.periode.selesai + ' · ' + reportTitle(meta).replace('Laporan HQI — ', '')), tbl), hqiDetailCards(r), ...extra, el('div', { class: 'section-head' }, el('h3', {}, 'Temuan selesai (Before → After): ' + r.before_after.length)), r.before_after.length ? list : el('p', { class: 'empty' }, 'Tidak ada temuan Close pada periode ini')); } catch (err) { if (my === reqSeq) out.replaceChildren(el('p', { class: 'empty err' }, err.message)); } });
   };
 
