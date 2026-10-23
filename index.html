@@ -1481,7 +1481,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       checklist: nz(ck.n, 0) + ' masuk · ' + nz(ck.valid, 0) + ' dihitung' + (ck.menunggu ? ' · ' + ck.menunggu + ' menunggu' : '') + (ck.ditolak ? ' · ' + ck.ditolak + ' ditolak' : ''),
       kepatuhan: nz(kp.hari_kerja, 0) + ' hari kerja · ' + (zs.length ? zs.slice(0, 3).map(z => z.nama + ' ' + z.hari_terisi + ' hari (' + z.pct + '%)').join(', ') + (zs.length > 3 ? ' · +' + (zs.length - 3) + ' zona' : '') : 'belum ada zona'),
     };
-    return hqiBasis(x).map(b => [b.nama, b.bobot, teks[b.key] || '', b.skor]); }
+    return hqiBasis(x).map(b => [b.nama, b.bobot, teks[b.key] || '', b.skor, hqiContrib(b, S.boot.config)]); }   // v1.17.5: + kontribusi ke HQI
   /**
    * v1.17.3: form Lampiran Berita Acara Pekerjaan — Nomor OK & nama pekerjaan (teks bebas, boleh kosong → titik-titik untuk diisi tangan),
    * diingat per vendor di perangkat (localStorage, kemudahan saja). Hanya untuk laporan satu vendor (kolom tanda tangan Rekanan butuh satu nama).
@@ -1530,13 +1530,13 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         + '<tr><th>Rekanan</th><td>:</td><td>' + esc(x.vendor) + '</td></tr><tr><th>Lokasi</th><td>:</td><td>' + esc(meta.pabrik) + '</td></tr>'
         + '<tr><th>Periode</th><td>:</td><td>' + esc(tglID(r.periode.mulai)) + ' s/d ' + esc(tglID(r.periode.selesai)) + '</td></tr></table>'
         + '<div class="hero">' + hqiHeroHtml(x, cfg) + '</div>'
-        + '<div class="rk-title">Ringkasan penilaian</div><table class="data rk"><tr><th>Komponen</th><th>Bobot</th><th>Ringkasan</th><th>Skor</th></tr>'
-        + baRingkasRows(x, rows.length).map(([nama, bk, teks, skor]) => '<tr><td><b>' + esc(nama) + '</b></td><td>' + esc(nz(cfg[bk], 0)) + '%</td><td>' + esc(teks) + '</td><td class="num">' + esc(nz(skor)) + '</td></tr>').join('')
-        + '<tr class="tot"><td colspan="3"><b>Skor HQI</b> · ' + esc(nz(x.grade, '-')) + '</td><td class="num"><b>' + esc(nz(x.hqi_final)) + '</b></td></tr></table>'
+        + '<div class="rk-title">Ringkasan penilaian</div><table class="data rk"><tr><th>Komponen</th><th>Ringkasan</th><th>Skor</th><th>Bobot</th><th>Kontribusi ke HQI</th></tr>'
+        + baRingkasRows(x, rows.length).map(([nama, bk, teks, skor, kon]) => '<tr><td><b>' + esc(nama) + '</b></td><td>' + esc(teks) + '</td><td class="num">' + esc(nz(skor)) + '</td><td class="num">× ' + esc(nz(cfg[bk], 0)) + '%</td><td class="num"><b>' + esc(kon) + '</b></td></tr>').join('')
+        + '<tr class="tot"><td colspan="4"><b>Skor HQI</b> (jumlah kontribusi) · ' + esc(nz(x.grade, '-')) + '</td><td class="num"><b>' + esc(nz(x.hqi_final)) + '</b></td></tr></table>'
         + '<p class="cintro">Hasil penilaian Housekeeping Quality Index (HQI) rekanan pada periode tersebut, beserta dokumentasi foto before/after pada halaman berikutnya, merupakan lampiran yang tidak terpisahkan dari Berita Acara Pekerjaan.</p>'
         + '<div class="cplace">Gresik, ' + dots + '</div>'
-        + '<div class="sign"><div class="scol"><div class="sh">Rekanan</div><div class="sorg">' + esc(x.vendor) + '</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div>'
-        + '<div class="scol"><div class="sh">PT Petrokimia Gresik</div><div class="sorg"></div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div></div></div>', 'brk');
+        + '<div class="sign"><div class="scol"><div class="sh">' + esc(x.vendor) + '</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div>'
+        + '<div class="scol"><div class="sh">PT Petrokimia Gresik</div><div class="sspace"></div><div class="sname">(' + dots + ')</div><div class="sjab">Nama &amp; Jabatan</div></div></div></div>', 'brk');
       // halaman foto: 8 temuan per halaman (4 baris × 2), maks. 2 halaman → total maks. 3 halaman
       const fig = (id, lab) => '<figure>' + (S.cache[id] ? '<img src="' + S.cache[id] + '">' : '<div class="noimg">tanpa foto</div>') + '<figcaption>' + lab + '</figcaption></figure>';
       const card = (f, i) => '<div class="pcard"><div class="pph">' + fig(f.foto_open, 'Before') + fig(f.foto_after, 'After') + '</div><div class="pcap"><b>' + (i + 1) + '. ' + esc(f.kategori) + ' — ' + esc(zonaName(f.zona_id)) + '</b><br>' + esc(f.prioritas) + ' · selesai ' + esc(fmtDT(f.timestamp_close)) + ' · TTR ' + esc(fmtMin(f.ttr_menit)) + '</div></div>';
@@ -1573,9 +1573,9 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       // lampiran berita acara: halaman depan (v1.17.3) + ringkasan & halaman foto (v1.17.4)
       + '.cover{padding-top:2px}.ctitle{text-align:center;font-size:19px;font-weight:800;letter-spacing:.04em;color:#1F3A5F}.csub{text-align:center;font-size:12.5px;color:#444;margin:2px 0 12px}'
       + 'table.meta{border-collapse:collapse;margin:0 0 10px;font-size:12.5px}table.meta th{text-align:left;font-weight:600;padding:3px 10px 3px 0;white-space:nowrap;vertical-align:top}table.meta td{padding:3px 6px 3px 0;vertical-align:top}.dots{color:#999;letter-spacing:1px}'
-      + '.rk-title{font-weight:700;font-size:12.5px;margin:10px 0 4px;color:#1F3A5F}table.rk{font-size:10.5px}table.rk th,table.rk td{padding:4px 6px}table.rk td.num{text-align:right;white-space:nowrap;width:44px}table.rk tr.tot td{background:#EEF2F7}'
+      + '.rk-title{font-weight:700;font-size:12.5px;margin:10px 0 4px;color:#1F3A5F}table.rk{font-size:10.5px}table.rk th,table.rk td{padding:4px 6px}table.rk td.num{text-align:right;white-space:nowrap;width:46px}table.rk th:nth-child(n+3){text-align:right;white-space:nowrap}table.rk tr.tot td{background:#EEF2F7}'
       + '.cintro{margin:10px 0 0;color:#222;line-height:1.45;text-align:justify;font-size:11.5px}.cplace{margin:14px 0 6px;text-align:right}'
-      + '.sign{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:4px;page-break-inside:avoid;break-inside:avoid}.scol{text-align:center;border:1px solid #CBD5E1;border-radius:10px;padding:10px}.sh{font-weight:700;font-size:13px}.sorg{font-size:11.5px;color:#444;min-height:16px}.sspace{height:70px}.sname{font-size:12px}.sjab{font-size:10.5px;color:#666;margin-top:2px}'
+      + '.sign{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:4px;page-break-inside:avoid;break-inside:avoid}.scol{text-align:center;border:1px solid #CBD5E1;border-radius:10px;padding:10px}.sh{font-weight:700;font-size:13px}.sorg{font-size:11.5px;color:#444;min-height:16px}.sspace{height:78px}.sname{font-size:12px}.sjab{font-size:10.5px;color:#666;margin-top:2px}'
       + '.ptitle{margin:0 0 2px}.psub{font-size:11px;margin-bottom:8px}.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}'
       + '.pcard{border:1px solid #CBD5E1;border-radius:8px;padding:6px;break-inside:avoid;page-break-inside:avoid}.pph{display:grid;grid-template-columns:1fr 1fr;gap:5px}'
       + 'figure{margin:0}figure img,figure .noimg{width:100%;height:118px;object-fit:cover;border-radius:4px;display:block;border:1px solid #ddd}figcaption{font-size:9.5px;color:#555;text-align:center;margin-top:1px}.pcap{font-size:10px;line-height:1.35;margin-top:4px}'
