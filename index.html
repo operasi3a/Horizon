@@ -1221,12 +1221,14 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     rows.forEach(r => { const items = JSON.parse(r.item_checklist || '[]'); const drainOn = r.sedang_drain === 'Y'; const box = el('div');
       const qOf = it => S.boot.questions.find(q => String(q.id) === String(it.question_id)) || { id: it.question_id, teks_pertanyaan: it.item, terkait_drain: it.hasil === 'NA' ? 'Y' : 'N' };
       box.replaceChildren(...items.map(it => { const row = triItem(qOf(it), drainOn); row.querySelector('span').append(el('em', {}, 'Jawaban Mandor: ' + it.hasil)); return row; }));
+      const vf = canVerify ? cameraSlot('Foto verifikasi (wajib)') : null;   // v1.17.6: foto kondisi zona saat verifikasi — wajib, langsung dari kamera (ber-watermark)
       const card = el('div', { class: 'card form' }, el('h3', {}, zonaName(r.zona_id) + ' · skor Mandor ' + nz(r.skor)), el('p', { class: 'hint' }, fmtDT(r.timestamp) + ' · batas ' + fmtDT(r.deadline_verifikasi) + (r.is_anomali === 'Y' ? ' · ANOMALI' : '') + (drainOn ? ' · saat jendela drain' : '')),
         el('div', { class: 'camera-row', id: 'ph-' + r.id }), canVerify ? el('p', { class: 'hint' }, 'Cross-checklist Anda:') : null, canVerify ? box : el('div', { class: 'hint' }, items.map(i => i.item + ': ' + i.hasil).join(' · ')),
-        canVerify ? el('div', { class: 'form-row' }, el('button', { class: 'btn primary', onclick: () => verify(r, box) }, 'Simpan verifikasi (pakai skor saya)'), el('button', { class: 'btn danger', onclick: () => tolak(r) }, 'Tolak (isian tidak sah)')) : null);
+        canVerify ? el('p', { class: 'hint' }, 'Foto verifikasi (wajib, dari kamera):') : null, canVerify ? el('div', { class: 'camera-row' }, vf) : null,
+        canVerify ? el('div', { class: 'form-row' }, el('button', { class: 'btn primary', onclick: () => verify(r, box, vf) }, 'Simpan verifikasi (pakai skor saya)'), el('button', { class: 'btn danger', onclick: () => tolak(r, vf) }, 'Tolak (isian tidak sah)')) : null);
       list.append(card); [r.foto1, r.foto2].filter(Boolean).forEach(id => photoImg(id).then(i => { if (i.src) { i.style.cssText = 'width:48%;border-radius:12px'; card.querySelector('#ph-' + r.id).append(i); } })); });
-    async function verify(r, box) { const answers = readTri(box); if (!answers) return toast('Jawab semua item cross-checklist dulu', true); try { const res = await api('verifyDailyChecklist', { id: r.id, setujui: true, items: answers }); toast('Terverifikasi · skor Mandor ' + nz(r.skor) + ' → skor Anda ' + nz(res.skor) + (res.is_anomali === 'Y' ? ' (selisih besar: ditandai anomali)' : '')); go('checklist'); } catch (e) { toast(e.message, true); } }
-    async function tolak(r) { if (!await confirmModal('Tolak checklist ' + zonaName(r.zona_id) + '?\nGunakan hanya bila isian/foto tidak sah. Entri ditolak tidak dihitung dan tidak menambah kepatuhan.')) return; try { await api('verifyDailyChecklist', { id: r.id, setujui: false }); toast('Ditolak'); go('checklist'); } catch (e) { toast(e.message, true); } }
+    async function verify(r, box, vf) { const answers = readTri(box); if (!answers) return toast('Jawab semua item cross-checklist dulu', true); if (!vf || !vf.dataset.value) return toast('Foto verifikasi wajib — tap kotak kamera untuk memotret kondisi zona', true); try { const res = await api('verifyDailyChecklist', { id: r.id, setujui: true, items: answers, foto: vf.dataset.value }); toast('Terverifikasi · skor Mandor ' + nz(r.skor) + ' → skor Anda ' + nz(res.skor) + (res.is_anomali === 'Y' ? ' (selisih besar: ditandai anomali)' : '')); go('checklist'); } catch (e) { toast(e.message, true); } }
+    async function tolak(r, vf) { if (!await confirmModal('Tolak checklist ' + zonaName(r.zona_id) + '?\nGunakan hanya bila isian/foto tidak sah. Entri ditolak tidak dihitung dan tidak menambah kepatuhan.')) return; try { await api('verifyDailyChecklist', { id: r.id, setujui: false, foto: vf && vf.dataset.value ? vf.dataset.value : undefined }); toast('Ditolak'); go('checklist'); } catch (e) { toast(e.message, true); } }
   }
 
   // ================= v1.17.1: RIWAYAT (Spot-Check & Checklist) + KEPATUHAN (Checklist) — permintaan Rudy 19 Okt 2026
@@ -1262,15 +1264,17 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   function histDetail(tipe, x) { const isSpot = tipe === 'spot'; const parse = s => { try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
     const items = parse(x.item_checklist), ver = parse(x.item_verifikasi); const vOf = it => (ver.find(v => String(v.question_id) === String(it.question_id)) || {}).hasil;
     const qText = it => it.item || (S.boot.questions.find(q => String(q.id) === String(it.question_id)) || {}).teks_pertanyaan || it.question_id;
-    const ph = el('div', { class: 'camera-row' });
+    const ph = el('div', { class: 'camera-row' }); const phv = el('div', { class: 'camera-row' });   // v1.17.6: foto pemverifikasi terpisah
     modal(el('div', { class: 'form' }, el('div', { class: 'section-head' }, el('h3', {}, (isSpot ? 'Spot-check' : 'Checklist') + ' · ' + zonaName(x.zona_id)), el('a', { class: 'link', onclick: closeModal }, 'Tutup')),
       el('p', { class: 'hint' }, fmtDT(x.timestamp) + ' · ' + x.vendor + ' · ' + (isSpot ? 'oleh ' : 'Mandor ') + x.oleh + (x.sedang_drain === 'Y' ? ' · saat jendela drain' : '')),
       isSpot ? el('p', {}, 'Skor ', scorePill(x.skor)) : el('p', {}, 'Skor Mandor ', el('b', {}, nz(x.skor_mandor)), ...(x.verifikator ? [' · skor verifikasi ', el('b', {}, nz(x.skor)), ' oleh ' + x.verifikator + (x.verified_at ? ' (' + fmtDT(x.verified_at) + ')' : '')] : []), ' ', ckPill(x)),
       x.is_anomali === 'Y' ? el('p', { class: 'hint warn-text' }, 'Anomali: selisih skor Mandor vs verifikasi melebihi ambang' + (x.status_review_anomali ? ' · review: ' + x.status_review_anomali : '')) : null,
       items.length ? el('div', { class: 'tbl-wrap' }, el('table', { class: 'tbl' }, el('tr', {}, el('th', {}, 'Item'), el('th', {}, isSpot ? 'Jawaban' : 'Mandor'), isSpot ? null : el('th', {}, 'Verifikasi')),
         ...items.map(it => el('tr', {}, el('td', {}, qText(it)), el('td', {}, it.hasil === 'NA' ? 'N/A' : it.hasil || '–'), isSpot ? null : el('td', {}, vOf(it) === 'NA' ? 'N/A' : vOf(it) || '–'))))) : el('p', { class: 'hint' }, 'Tanpa rincian item'),
-      ph));
-    (isSpot ? [x.foto] : [x.foto1, x.foto2]).filter(Boolean).forEach(id => photoImg(id).then(i => { if (i.src) { i.style.cssText = 'width:48%;border-radius:12px'; ph.append(i); } }));
+      isSpot ? null : el('p', { class: 'hint' }, 'Foto Mandor:'), ph,
+      !isSpot && x.foto_verifikasi ? el('p', { class: 'hint' }, 'Foto verifikasi' + (x.verifikator ? ' oleh ' + x.verifikator : '') + ':') : null, !isSpot && x.foto_verifikasi ? phv : null));
+    const put = (box, id) => photoImg(id).then(i => { if (i.src) { i.style.cssText = 'width:48%;border-radius:12px'; box.append(i); } });
+    (isSpot ? [x.foto] : [x.foto1, x.foto2]).filter(Boolean).forEach(id => put(ph, id)); if (!isSpot && x.foto_verifikasi) put(phv, x.foto_verifikasi);
   }
   async function complianceView(c, bar) {
     const isMandor = S.user.role === 'Mandor'; const bln = el('input', { type: 'month', value: today().slice(0, 7) }); const box = el('div', { class: 'form' }); let seq = 0;
