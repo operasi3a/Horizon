@@ -1231,7 +1231,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const dOf = iso => String(iso || '').slice(0, 10); let hist, tanpaSinyal = false;
     try { hist = await api('myChecklists', { hari: 7 }); saved.set('myChecklists', hist); }   /* v1.18 (O2): tanpa sinyal → riwayat tersimpan di HP */
     catch (e) { hist = saved.get('myChecklists'); if (!hist || !e.network) throw e; tanpaSinyal = true; }
-    const antre = (await myQueue()).filter(it => it.body && it.body.action === 'submitDailyChecklist');
+    const antre = (await myQueue()).filter(it => it.body && it.body.action === 'submitDailyChecklist' && !it.rejected);   /* v1.18.1: yang ditolak server tidak dihitung "Menunggu terkirim" & tidak mengunci zona (tetap ada di daftar antrean) */
     hist = antre.map(it => ({ id: it.body.client_id, zona_id: it.body.zona_id, timestamp: it.body.waktu_isi, skor: '–', status_verifikasi: 'Menunggu terkirim', oleh: S.user.nama, antrean: true })).concat(hist.filter(h => !antre.some(it => it.body.client_id === h.id)));
     const done = hist.filter(x => dOf(x.timestamp) === today()); const zones = S.boot.zones;
     const doneZ = id => done.find(x => x.zona_id === id);
