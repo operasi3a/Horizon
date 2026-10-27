@@ -437,18 +437,24 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   /** Nilai aman untuk ditampilkan: null/undefined/NaN (mis. dari JSON server) → pengganti, bukan teks "null" (perbaikan v1.7). */
   const nz = (v, d) => v == null || (typeof v === 'number' && isNaN(v)) ? (d === undefined ? '–' : d) : v;
   const vendorName = id => (S.boot.vendors.find(v => v.id === id) || {}).nama || id;
-  const monthStart = () => new Date().toISOString().slice(0, 8) + '01';
-  const today = () => new Date().toISOString().slice(0, 10);
+  /** v1.18: waktu lokal HP 'yyyy-MM-ddTHH:mm:ss' (WIB) — dipakai untuk waktu isi antrean offline & tanggal hari ini. */
+  const localIso = (d) => { d = d || new Date(); const p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); };
+  const monthStart = () => localIso().slice(0, 8) + '01';
+  const today = () => localIso().slice(0, 10);   // v1.18: tanggal lokal (sebelumnya UTC)
 
   // ---------------- storage aman (iframe Apps Script bisa memblokir localStorage di beberapa browser)
   const mem = {}; const store = { get: k => { try { return localStorage.getItem(k); } catch (e) { return mem[k] || null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { mem[k] = v; } }, del: k => { try { localStorage.removeItem(k); } catch (e) { delete mem[k]; } } };
   S.token = store.get('hz_token') || ''; S.scope = store.get('hz_scope') || 'ALL';
   // ---------------- API via google.script.run + antrean offline (IndexedDB, best-effort)
   const idb = { db: null, open() { return new Promise(res => { try { const r = indexedDB.open('horizon', 1); r.onupgradeneeded = () => r.result.createObjectStore('queue', { keyPath: 'id', autoIncrement: true }); r.onsuccess = () => { idb.db = r.result; res(); }; r.onerror = () => res(); } catch (e) { res(); } }); },
-    add(item) { return new Promise(res => { const tx = idb.db.transaction('queue', 'readwrite'); tx.objectStore('queue').add(item); tx.oncomplete = res; }); },
+    add(item) { return new Promise((res, rej) => { try { const tx = idb.db.transaction('queue', 'readwrite'); tx.objectStore('queue').add(item); tx.oncomplete = res; tx.onerror = () => rej(tx.error || new Error('IndexedDB')); tx.onabort = () => rej(tx.error || new Error('IndexedDB')); } catch (e) { rej(e); } }); },
+    put(item) { return new Promise(res => { try { const tx = idb.db.transaction('queue', 'readwrite'); tx.objectStore('queue').put(item); tx.oncomplete = res; tx.onerror = res; } catch (e) { res(); } }); },
     all() { return new Promise(res => { const r = idb.db.transaction('queue').objectStore('queue').getAll(); r.onsuccess = () => res(r.result || []); }); },
     del(id) { return new Promise(res => { const tx = idb.db.transaction('queue', 'readwrite'); tx.objectStore('queue').delete(id); tx.oncomplete = res; }); } };
-  const WRITE_ACTIONS = ['createFinding', 'closeFinding', 'submitDailyChecklist', 'submitSpotCheck'];
+  // v1.18: aksi yang boleh masuk antrean offline (label untuk daftar antrean)
+  const OFFLINE_ACTIONS = { createFinding: 'Temuan baru', closeFinding: 'Tutup temuan', submitDailyChecklist: 'Checklist harian', submitSpotCheck: 'Spot-check' };
+  const WRITE_ACTIONS = Object.keys(OFFLINE_ACTIONS);
+  const newClientId = () => 'h' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);   // kode unik kiriman (anti-dobel di server)
   /**
    * Panggil backend. Dua mode (v1.11.1):
    *  - disajikan Apps Script (HtmlService)  → google.script.run.apiCall
@@ -468,25 +474,30 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   function busyRender() {
     if (!busy.bar) { busy.bar = el('div', { class: 'busy-bar hidden' }); busy.txt = el('span', {}); busy.pill = el('div', { class: 'busy-pill hidden', role: 'status', 'aria-live': 'polite' }, el('span', { class: 'spin' }), busy.txt); document.body.append(busy.bar, busy.pill); }
     busy.bar.classList.toggle('hidden', !busy.n); busy.pill.classList.toggle('hidden', !busy.w); document.body.classList.toggle('saving', busy.w > 0); }
-  function callServer(body) {
+  function callServer(body, opt) {
     const label = busyWrite(body); busy.n++; if (label) { busy.w++; busyRender(); busy.txt.textContent = label; } else busyRender();
     const done = () => { busy.n = Math.max(0, busy.n - 1); if (label) busy.w = Math.max(0, busy.w - 1); busyRender(); };
-    return callServerRaw(body).then(j => { done(); return j; }, e => { done(); throw e; });
+    return callServerRaw(body, opt).then(j => { done(); return j; }, e => { done(); throw e; });
   }
-  function callServerRaw(body) {
+  /** v1.18: error jaringan (sinyal putus, server tak menjawab, 5xx) diberi e.network = true → aksi tulis masuk antrean offline. */
+  const netErr = msg => { const e = new Error(msg); e.network = true; return e; };
+  function callServerRaw(body, opt) {
     const bad = () => new Error('Server tidak mengembalikan data yang valid (respons kosong) — coba lagi; bila berulang, laporkan aksi "' + body.action + '"');
     if (window.google && google.script && google.script.run) return new Promise((res, rej) => google.script.run.withSuccessHandler(j => j && typeof j === 'object' ? res(j) : rej(bad())).withFailureHandler(e => rej(new Error((e && e.message) || String(e)))).apiCall(body));
     if (!C.API_URL) return Promise.reject(new Error('Backend tidak dikonfigurasi (API_URL kosong)'));
-    return fetch(C.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), redirect: 'follow' })
-      .then(r => { if (!r.ok) throw new Error('Server menjawab ' + r.status); return r.json(); })
-      .then(j => { if (j && typeof j === 'object') return j; throw bad(); })
-      .catch(e => { throw new Error(/Failed to fetch|NetworkError|Load failed/i.test(e.message) ? 'Tidak dapat menghubungi server — periksa koneksi internet' : e.message); });
+    const ac = opt && opt.timeout && window.AbortController ? new AbortController() : null; const tm = ac ? setTimeout(() => ac.abort(), opt.timeout) : 0;
+    return fetch(C.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), redirect: 'follow', signal: ac ? ac.signal : undefined })
+      .then(r => { if (r.status >= 500) throw netErr('Server sibuk (' + r.status + ')'); if (!r.ok) throw new Error('Server menjawab ' + r.status); return r.json(); })
+      .then(j => { clearTimeout(tm); if (j && typeof j === 'object') return j; throw bad(); })
+      .catch(e => { clearTimeout(tm); if (e.network) throw e; if (e.name === 'AbortError') throw netErr('Server tidak menjawab (sinyal lemah)'); if (e.name === 'TypeError' || /Failed to fetch|NetworkError|Load failed/i.test(e.message)) throw netErr('Tidak dapat menghubungi server — periksa koneksi internet'); throw e; });
   }
   async function api(action, payload, opt) {
     const body = Object.assign({ action, token: S.token }, payload || {});
     if (S.boot && S.boot.isMulti && body.pabrik_id === undefined) body.pabrik_id = S.scope;   // role global / multi-lingkup: kirim lingkup aktif
-    if (!navigator.onLine && idb.db && WRITE_ACTIONS.includes(action)) { await idb.add({ body, t: Date.now() }); toast('Offline: disimpan di antrean, dikirim otomatis nanti'); return { queued: true }; }
-    const j = await callServer(body);
+    const offl = !!idb.db && WRITE_ACTIONS.includes(action);   // v1.18 (O1/O3): kode unik + waktu isi; antrean bila offline atau sinyal putus saat mengirim
+    if (offl) { if (!body.client_id) body.client_id = newClientId(); if (!body.waktu_isi) body.waktu_isi = localIso(); }
+    if (offl && !navigator.onLine) return queueWrite(body);
+    let j; try { j = await callServer(body, offl ? { timeout: 90000 } : null); } catch (e) { if (offl && e.network) return queueWrite(body, e.message); throw e; }
     if (!j.ok) { if (/login/i.test(j.error) && !(opt && opt.silent) && body.token === S.token) logout(); throw new Error(j.error); }   // v1.16: jawaban terlambat dari token lama tidak mengeluarkan sesi baru
     return j.data;
   }
@@ -558,7 +569,40 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     if (old && JSON.stringify(old) === JSON.stringify(fresh)) { const n = c.querySelector('.stale-note'); if (n) n.remove(); return; }
     const sc = c.scrollTop; render(fresh); if (old) c.scrollTop = sc;
   }
-  async function flushQueue() { if (!idb.db || !navigator.onLine) return; const items = await idb.all(); for (const it of items) { try { it.body.token = S.token; const j = await callServer(it.body); if (j.ok || !/sesi|login/i.test(j.error)) await idb.del(it.id); } catch (e) { break; } } if (items.length) toast('Antrean offline terkirim (' + items.length + ')'); }
+  // ---------------- v1.18 (O1–O4): antrean offline — data disimpan di HP (IndexedDB) bila tidak ada sinyal / sinyal putus saat mengirim,
+  //  dikirim otomatis saat sinyal kembali (event online + coba ulang tiap 60 dtk), memakai kode unik agar tidak dobel di server.
+  //  Hanya milik user yang sedang login yang dikirim. Ditolak server (mis. "sudah diisi") → tetap terlihat di daftar antrean sampai dihapus.
+  async function queueWrite(body, why) {
+    try { await idb.add({ body, t: Date.now(), user: S.user ? S.user.id : '', lastError: why || 'Tidak ada sinyal' }); }
+    catch (e) { throw new Error('Tidak ada sinyal dan data gagal disimpan di HP (' + (e && e.message || 'memori penuh?') + ') — coba lagi saat ada sinyal'); }
+    updateQueueBadge(); return { queued: true, id: body.client_id };
+  }
+  async function myQueue() { if (!idb.db || !S.user) return []; return (await idb.all()).filter(it => !it.user || it.user === S.user.id); }
+  let flushing = false;
+  async function flushQueue(manual) {
+    if (flushing || !idb.db || !S.token || !S.user) return; if (!navigator.onLine && !manual) return; flushing = true; let sent = 0, ditolak = 0;
+    try { for (const it of await myQueue()) { if (it.rejected && !manual) continue;
+        try { const j = await callServer(Object.assign({}, it.body, { token: S.token, dari_antrean: true }), { timeout: 90000 });
+          if (j.ok) { await idb.del(it.id); sent++; }
+          else if (/sesi|login/i.test(j.error)) { it.lastError = 'Perlu login ulang untuk mengirim'; await idb.put(it); break; }
+          else { it.lastError = j.error; it.rejected = true; await idb.put(it); ditolak++; } }
+        catch (e) { it.lastError = e.message; await idb.put(it); break; } } }
+    finally { flushing = false; }
+    await updateQueueBadge();
+    if (sent) toast(sent + ' data dari antrean berhasil terkirim');
+    if (ditolak) toast(ditolak + ' data antrean ditolak server — buka daftar antrean (ikon panah di atas)', true);
+    return sent;
+  }
+  async function updateQueueBadge() { const b = document.getElementById('btn-queue'); if (!b) return; const n = (await myQueue()).length; b.classList.toggle('hidden', !n); b.querySelector('.badge').textContent = n; S.queueCount = n; }
+  async function openQueue() { const items = await myQueue(); const list = el('div', { class: 'list' }); const info = el('p', { class: 'hint' });
+    const render = async () => { const its = await myQueue(); info.textContent = its.length ? its.length + ' data tersimpan di HP ini dan belum terkirim. Jangan hapus data situs/browser sebelum semuanya terkirim.' : 'Semua data sudah terkirim.';
+      list.replaceChildren(...its.map(it => { const b = it.body || {};
+        return el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, (OFFLINE_ACTIONS[b.action] || b.action) + (b.zona_id ? ' · ' + zonaName(b.zona_id) : '')),
+          el('span', {}, 'Diisi ' + fmtDT(b.waktu_isi || new Date(it.t).toISOString()) + ' · ' + (it.rejected ? 'Ditolak server: ' : 'Menunggu sinyal') + (it.lastError && it.rejected ? it.lastError : ''))),
+          el('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmModal('Hapus data ini dari HP?\nData yang belum terkirim akan hilang.')) { openQueue(); return; } await idb.del(it.id); await updateQueueBadge(); openQueue(); } }, 'Hapus')); })); };
+    const send = el('button', { class: 'btn primary', onclick: async () => { send.disabled = true; await flushQueue(true); send.disabled = false; render(); } }, 'Kirim sekarang');
+    modal(el('div', { class: 'form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Antrean belum terkirim'), el('a', { class: 'link', onclick: closeModal }, 'Tutup')), info, list, items.length ? send : null)); render(); }
+  setInterval(() => { if (S.queueCount) flushQueue(); }, 60000);   // sinyal sering kembali tanpa event "online"
   window.addEventListener('online', () => { $('#offline-bar').classList.add('hidden'); flushQueue(); });
   window.addEventListener('offline', () => $('#offline-bar').classList.remove('hidden'));
 
@@ -818,7 +862,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       return; }
     try { const r = await fetchBoot(true, { silent: true }); preDash(r.dash); enterApp(r.boot); }
     catch (e) { logout(); $('#login-msg').textContent = e.message; } }
-  function enterApp(b) { S.boot = b; S.user = b.user; saveBoot(); $('#screen-login').classList.add('hidden'); $('#screen-app').classList.remove('hidden'); buildNav(); buildScope(); setBadge(S.boot.unread); go('home'); flushQueue(); S._lastRefresh = Date.now();
+  function enterApp(b) { S.boot = b; S.user = b.user; saveBoot(); $('#screen-login').classList.add('hidden'); $('#screen-app').classList.remove('hidden'); buildNav(); buildScope(); setBadge(S.boot.unread); go('home'); updateQueueBadge(); flushQueue(); S._lastRefresh = Date.now();
     if (S.user.mustChange) openAccount(true); }   // v1.10: password default wajib diganti
   const roleLabel = r => ({ PersonilRekanan: 'Personil Rekanan', Mandor: 'Mandor/Koordinator', KaryawanOrganik: 'Karyawan Organik', Admin: 'Admin Pabrik', Manajemen: 'Manajemen', SuperAdmin: 'Super Admin' }[r] || r);
   /** Pemilih lingkup di header untuk role global (Manajemen/SuperAdmin): "Semua lingkup" atau satu pabrik. */
@@ -1124,7 +1168,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       el('div', { class: 'form-row' }, fld('Kategori', kategori), fld('Prioritas (target penyelesaian vendor)', prioritas)), fld('Deskripsi', desk), foto, btn);
     c.replaceChildren(form);
     btn.addEventListener('click', async () => { if (!pin) return toast('Pasang pin lokasi di peta dulu', true); if (!zona) return toast('Pilih zona penanggung jawab', true); if (!foto.dataset.value) return toast('Foto wajib diambil dari kamera', true); btn.disabled = true;
-      try { await api('createFinding', { zona_id: zona.id, di_luar_zona: luar, kategori: kategori.value, prioritas: prioritas.value, deskripsi: desk.value, pin_lat: pin.lat, pin_lng: pin.lng, gps_lat: gps.lat || '', gps_lng: gps.lng || '', gps_akurasi: gps.akurasi || '', gps_status: gps.status, foto: foto.dataset.value }); toast('Temuan terkirim'); go('temuan'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
+      try { const r1 = await api('createFinding', { zona_id: zona.id, di_luar_zona: luar, kategori: kategori.value, prioritas: prioritas.value, deskripsi: desk.value, pin_lat: pin.lat, pin_lng: pin.lng, gps_lat: gps.lat || '', gps_lng: gps.lng || '', gps_akurasi: gps.akurasi || '', gps_status: gps.status, foto: foto.dataset.value }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Temuan terkirim'); go('temuan'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
     try { await loadMaps(); map = newMap(mapBox); } catch (e) { mapError(mapBox, e.message); gpsBtn.disabled = true; zonaInfo.textContent = 'Peta tidak tersedia — pin lokasi tidak bisa dipasang'; zonaInfo.className = 'hint err'; return; }
     drawZones(map, S.boot.zones); fitZones(map, S.boot.zones);
     // Pin di dalam zona → zona & vendor otomatis. Pin di luar semua zona → tetap bisa dikirim: pilih zona penanggung jawab (terdekat disarankan), ditandai "di luar zona" (PRD 7.1).
@@ -1165,7 +1209,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     }
     if ((u.role === 'Mandor' || u.role === 'PersonilRekanan') && f.status === 'InProgress') {
       const fa = cameraSlot('Foto after (kamera)'); const b = el('button', { class: 'btn primary' }, 'Tandai selesai (Close)');
-      b.addEventListener('click', async () => { if (!fa.dataset.value) return toast('Foto after wajib', true); b.disabled = true; try { await api('closeFinding', { id: f.id, foto: fa.dataset.value }); toast('Temuan ditutup'); go('temuan'); } catch (e) { toast(e.message, true); b.disabled = false; } });
+      b.addEventListener('click', async () => { if (!fa.dataset.value) return toast('Foto after wajib', true); b.disabled = true; try { const r1 = await api('closeFinding', { id: f.id, foto: fa.dataset.value }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Temuan ditutup'); go('temuan'); } catch (e) { toast(e.message, true); b.disabled = false; } });
       box.append(el('div', { class: 'card form' }, el('h3', {}, 'Selesaikan'), fa, b));
     }
     if ((u.role === 'KaryawanOrganik' || u.role === 'Admin' || u.role === 'SuperAdmin') && f.status_persetujuan_skala === 'Menunggu') {
@@ -1184,14 +1228,20 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     if (tab === 'kepatuhan') return complianceView(c, subBar);
     if (verifier) { await verificationQueue(c); c.firstChild.after(subBar); return; }
     // v1.12: daftar checklist vendor 7 hari terakhir → zona yang sudah diisi hari ini dikunci (server juga menolak dobel), rekap hari kerja, catatan akhir pekan
-    const dOf = iso => String(iso || '').slice(0, 10); const hist = await api('myChecklists', { hari: 7 }); const done = hist.filter(x => dOf(x.timestamp) === today()); const zones = S.boot.zones;
+    const dOf = iso => String(iso || '').slice(0, 10); let hist, tanpaSinyal = false;
+    try { hist = await api('myChecklists', { hari: 7 }); saved.set('myChecklists', hist); }   /* v1.18 (O2): tanpa sinyal → riwayat tersimpan di HP */
+    catch (e) { hist = saved.get('myChecklists'); if (!hist || !e.network) throw e; tanpaSinyal = true; }
+    const antre = (await myQueue()).filter(it => it.body && it.body.action === 'submitDailyChecklist');
+    hist = antre.map(it => ({ id: it.body.client_id, zona_id: it.body.zona_id, timestamp: it.body.waktu_isi, skor: '–', status_verifikasi: 'Menunggu terkirim', oleh: S.user.nama, antrean: true })).concat(hist.filter(h => !antre.some(it => it.body.client_id === h.id)));
+    const done = hist.filter(x => dOf(x.timestamp) === today()); const zones = S.boot.zones;
     const doneZ = id => done.find(x => x.zona_id === id);
     const zsel = sel(zones.map(z => ({ v: z.id, t: z.nama_area + (doneZ(z.id) ? ' ✓ sudah diisi hari ini' : '') })));
     Array.from(zsel.options).forEach(o => { if (doneZ(o.value)) o.disabled = true; }); const firstOpen = zones.find(z => !doneZ(z.id)); if (firstOpen) zsel.value = firstOpen.id;
     const wd = new Date().getDay(), weekend = wd === 0 || wd === 6;
-    const stPill = x => el('span', { class: 'pill ' + (x.status_verifikasi === 'Ditolak' ? 'Nonaktif' : x.status_verifikasi === 'Menunggu' ? 'Open' : 'ok') }, x.status_verifikasi || '-');
+    const stPill = x => el('span', { class: 'pill ' + (x.status_verifikasi === 'Ditolak' ? 'Nonaktif' : x.status_verifikasi === 'Menunggu' || x.antrean ? 'Open' : 'ok') }, x.status_verifikasi || '-');
     const recap = zones.map(z => ({ z, n: new Set(hist.filter(x => x.zona_id === z.id && x.status_verifikasi !== 'Ditolak').map(x => dOf(x.timestamp))).size }));
     const todayCard = el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Checklist hari ini'), el('span', { class: 'hint' }, done.length + ' dari ' + zones.length + ' zona')),
+      tanpaSinyal ? el('p', { class: 'hint warn-text' }, 'Tanpa sinyal: data zona & pertanyaan dari HP. Checklist yang dikirim disimpan di HP (bisa beberapa zona) dan terkirim otomatis saat ada sinyal.') : null,
       weekend ? el('p', { class: 'hint warn-text' }, 'Hari ini akhir pekan — checklist tidak wajib (hari kerja Senin–Jumat) dan tidak memengaruhi kepatuhan.') : null,
       done.length ? el('div', { class: 'list' }, ...done.map(x => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, zonaName(x.zona_id) + ' · skor ' + nz(x.skor)), el('span', {}, fmtDT(x.timestamp) + ' · oleh ' + x.oleh + (x.is_anomali === 'Y' ? ' · anomali' : ''))), stPill(x)))) : el('p', { class: 'hint' }, 'Belum ada zona yang diisi hari ini.'),
       el('p', { class: 'hint' }, '7 hari terakhir: ' + recap.map(r => r.z.nama_area + ' ' + r.n + ' hari').join(' · ')));
@@ -1209,7 +1259,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       el('p', { class: 'hint', style: 'text-align:center' }, 'Setelah dikirim: Menunggu Verifikasi Karyawan Organik (batas hari ini)'), zones.length ? perCard : null); c.firstChild.after(subBar);
     if (zones.length && !firstOpen) { btn.disabled = true; btn.textContent = 'Semua zona sudah diisi hari ini'; }
     btn.addEventListener('click', async () => { if (doneZ(zsel.value)) return toast('Zona ini sudah diisi hari ini — pilih zona lain', true); const answers = readTri(items); if (!answers) return toast('Semua item harus dijawab', true); if (!f1.dataset.value) return toast('Foto 1 wajib', true); btn.disabled = true;
-      try { await api('submitDailyChecklist', { zona_id: zsel.value, items: answers, sedang_drain: drain.checked, foto1: f1.dataset.value, foto2: f2.dataset.value || '' }); toast('Checklist terkirim'); go('checklist'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
+      try { const r1 = await api('submitDailyChecklist', { zona_id: zsel.value, items: answers, sedang_drain: drain.checked, foto1: f1.dataset.value, foto2: f2.dataset.value || '' }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Checklist terkirim'); go('checklist'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
   };
   function triItem(q, drainOn) { const na = drainOn && q.terkait_drain === 'Y'; const tri = el('div', { class: 'tri' }, ...['Ya', 'Cukup', 'Tidak'].map(v => el('button', { type: 'button', disabled: na ? '' : null, onclick: e => { tri.querySelectorAll('button').forEach(b => b.classList.remove('active')); e.target.classList.add('active'); tri.dataset.v = v; } }, v)));
     if (na) tri.dataset.v = 'NA'; return el('div', { class: 'check-item' + (na ? ' na' : ''), 'data-q': q.id }, el('span', {}, q.teks_pertanyaan, na ? el('em', {}, 'N/A — aktivitas drain') : null), tri); }
@@ -1301,7 +1351,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     drain.addEventListener('change', renderItems); zsel.addEventListener('change', renderItems); renderItems();
     const btn = el('button', { class: 'btn primary' }, 'Kirim spot-check');
     c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Spot-Check'), el('p', {}, 'Tidak terjadwal — kapan saja saat di lapangan')), el('div', { class: 'card form' }, fld('Zona', zsel), zoneMapPicker(zsel, S.boot.zones), el('label', { class: 'toggle' }, drain, 'Sedang ada aktivitas drain'), items), el('div', { class: 'section-head' }, el('h3', {}, 'Bukti foto (kamera, ber-watermark)')), el('div', { class: 'camera-row' }, f), btn); c.firstChild.after(subBar);   // v1.7.2: peta zona; slot foto dibungkus .camera-row agar tidak terjepit
-    btn.addEventListener('click', async () => { const a = readTri(items); if (!a) return toast('Semua item harus dijawab', true); btn.disabled = true; try { await api('submitSpotCheck', { zona_id: zsel.value, items: a, sedang_drain: drain.checked, foto: f.dataset.value || '' }); toast('Spot-check tersimpan'); go('spot'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
+    btn.addEventListener('click', async () => { const a = readTri(items); if (!a) return toast('Semua item harus dijawab', true); btn.disabled = true; try { const r1 = await api('submitSpotCheck', { zona_id: zsel.value, items: a, sedang_drain: drain.checked, foto: f.dataset.value || '' }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Spot-check tersimpan'); go('spot'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
   };
 
   // ================= LEADERBOARD (internal PKG: Organik, Admin, Manajemen, SuperAdmin) — v1.6 menu sendiri
@@ -1941,6 +1991,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   applyTheme(store.get('hz_theme') || 'dark');
   $('#btn-theme').addEventListener('click', () => applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'));
   $('#btn-login').addEventListener('click', login); $('#login-pin').addEventListener('keydown', e => e.key === 'Enter' && login());
+  { const qb = el('button', { class: 'icon-btn hidden', id: 'btn-queue', title: 'Antrean belum terkirim', onclick: () => openQueue(), html: '<svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>' }, el('span', { class: 'badge' }, '0')); $('#btn-notif').before(qb); }   /* v1.18 (O4) */
   $('#btn-logout').addEventListener('click', logout); $('#btn-notif').addEventListener('click', openNotif); $('#btn-guide').addEventListener('click', () => go('panduan'));
   // ---------------- v1.10: segarkan otomatis saat aplikasi kembali dari latar belakang atau lama tidak dipakai
   //  - kembali terlihat setelah ≥60 dtk tersembunyi, atau diam ≥5 menit → bootstrap ulang (zona, pertanyaan, bobot, badge) dan render ulang layar
