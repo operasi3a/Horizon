@@ -111,6 +111,8 @@ html[data-theme="light"] .chip{background:rgba(255,255,255,.6)}
 .pill.Open{background:rgba(248,113,113,.15);color:var(--danger);border-color:rgba(248,113,113,.4)}
 .pill.InProgress{background:rgba(251,191,36,.15);color:var(--warn);border-color:rgba(251,191,36,.4)}
 .pill.Close,.pill.ok{background:rgba(94,200,255,.18);color:var(--aqua);border-color:rgba(94,200,255,.4)}
+/* v1.19: status Menunggu Verifikasi + kartu "Perlu Anda verifikasi" */
+.pill.MenungguVerifikasi{background:rgba(167,139,250,.18);color:#C4B5FD;border-color:rgba(167,139,250,.45)}html[data-theme="light"] .pill.MenungguVerifikasi{color:#6D28D9}.verify-card{border:1.5px solid rgba(167,139,250,.6);box-shadow:0 0 0 3px rgba(167,139,250,.12)}.verify-card.warn{border-color:rgba(251,191,36,.65);box-shadow:0 0 0 3px rgba(251,191,36,.12)}.verify-count{min-width:28px;height:28px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:#7C3AED;color:#fff;font-size:13px;padding:0 8px}.verify-card.warn .verify-count{background:#D97706}
 .pill.Menunggu{background:rgba(251,191,36,.15);color:var(--warn)}
 .pill.Nonaktif{background:rgba(255,255,255,.08);color:var(--text);border-color:var(--glass-border)}
 .row-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.zone-row,.user-row{flex-wrap:wrap}.zone-row .info,.user-row .info{flex:1 1 160px;min-width:160px}
@@ -431,6 +433,8 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   // v1.7.1: kesalahan JS yang tidak tertangkap ditampilkan sebagai toast (memudahkan laporan bug dari lapangan), tidak lagi diam di console
   window.addEventListener('error', e => { if (e.message) toast('Kesalahan aplikasi: ' + e.message, true); });
   window.addEventListener('unhandledrejection', e => { const r = e.reason; toast('Kesalahan aplikasi: ' + (r && r.message ? r.message : String(r)), true); });
+  const ST_LABEL = { Open: 'Open', InProgress: 'In Progress', MenungguVerifikasi: 'Menunggu Verifikasi', Close: 'Close' };   // v1.19
+  const stLabel = st => ST_LABEL[st] || st || '-';
   const fmtDT = iso => iso ? String(iso).replace('T', ' ').slice(0, 16) : '-';
   const fmtMin = m => { m = Math.round(Number(m) || 0); return m >= 60 ? Math.floor(m / 60) + ' jam' + (m % 60 ? ' ' + (m % 60) + 'm' : '') : m + ' menit'; };
   const zonaName = id => (S.boot.zones.find(z => z.id === id) || {}).nama_area || id || '-';
@@ -947,7 +951,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const st = g.status || { Open: 0, InProgress: 0, Close: 0 };
     const charts = el('div', { class: 'chart-grid' },
       chartCard('Temuan 14 hari terakhir', 'Jumlah temuan Open (dibuat) vs Close (selesai) per hari', chartColumns((g.tren || []).map(t => ({ label: t.tgl.slice(8) + '/' + t.tgl.slice(5, 7), values: [t.dibuka, t.ditutup] })), ['Open', 'Close'])),
-      chartCard('Status temuan periode ini', 'Open · In Progress · Close', chartStack([{ label: 'Open', value: st.Open }, { label: 'In Progress', value: st.InProgress }, { label: 'Close', value: st.Close }])),
+      chartCard('Status temuan periode ini', 'Open · In Progress · Menunggu Verifikasi · Close', chartStack([{ label: 'Open', value: st.Open }, { label: 'In Progress', value: st.InProgress }, { label: 'Menunggu Verifikasi', value: st.MenungguVerifikasi || 0 }, { label: 'Close', value: st.Close }])),
       chartCard('Temuan per kategori', 'Periode ' + d.periode.mulai + ' s/d ' + d.periode.selesai, chartHBars((g.kategori || []).map(k => ({ label: k.label, value: k.n })))),
       chartCard('Temuan open per prioritas', 'Yang belum selesai saat ini', chartHBars((g.prioritas_open || []).map(k => ({ label: k.label, value: k.n })))));
     const hqiTrend = g.hqi_tren && g.hqi_tren.length >= 2 && new Set(g.hqi_tren.map(h => h.periode)).size >= 2 ? chartCard('Tren HQI bulanan', 'Per vendor, dari kalkulasi harian (maks. 4 vendor)', chartLines(g.hqi_tren)) : null;
@@ -955,11 +959,25 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const heatN = (d.heatmap || []).length;
     const kuotaCard = null;   // v1.11.1: kartu progres kuota spot-check dihapus atas permintaan Rudy (aturan kuota minimum tetap berlaku di skor, PRD 7.6)
     c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Halo, ' + nz(S.user.nama, '')), el('p', {}, roleLabel(S.user.role) + ' · ' + pab + ' — ' + new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long' }) + ' · ', el('a', { class: 'link', onclick: openAccount }, 'Akun & password'))),
+      verifyCard(d.verifikasi), returnedCard(d.dikembalikan),   /* v1.19 */
       ...(hqiCards.length ? hqiCards : [el('p', { class: 'empty' }, 'Belum ada vendor terdaftar untuk lingkup ini')]), stats, kuotaCard, charts, hqiTrend,
       el('div', { class: 'card row-card link-card', onclick: () => go('heatmap') }, el('span', { class: 'link-ico', html: ICON.heatmap }), el('div', { class: 'info' }, el('b', {}, 'Heatmap temuan'), el('span', {}, heatN + ' titik temuan bulan ini · peta panas per zona dengan filter periode, kategori, vendor & status')), el('span', { class: 'link' }, 'Buka')),
       el('div', { class: 'section-head' }, el('h3', {}, 'Temuan terbaru'), el('a', { class: 'link', onclick: () => go('temuan') }, 'Lihat semua')), findingList(d.temuan_terbaru || []));
   }
   const stat =(v, l) => el('div', { class: 'card stat-card' }, el('b', {}, v), el('span', {}, l));
+  /** v1.19: kartu Beranda "Perlu Anda verifikasi" — penutupan temuan (pelapor/Admin lingkup) + checklist menunggu (Organik/Super Admin). Kosong → tidak tampil. */
+  function verifyCard(v) { if (!v || (!v.total_temuan && !v.checklist_menunggu)) return null;
+    return el('div', { class: 'card form verify-card' }, el('div', { class: 'section-head' }, el('h3', {}, 'Perlu Anda verifikasi'), el('b', { class: 'verify-count' }, (v.total_temuan || 0) + (v.checklist_menunggu || 0))),
+      v.total_temuan ? el('p', { class: 'hint' }, v.total_temuan + ' penutupan temuan menunggu — bandingkan foto before & after, lalu Setujui atau Tolak') : null,
+      ...(v.temuan || []).map(f => el('div', { class: 'card row-card link-card', onclick: () => go('temuan', { detail: f }) }, el('div', { class: 'info' }, el('b', {}, f.kategori + ' — ' + zonaName(f.zona_id)),
+        el('span', {}, vendorName(f.vendor_id) + ' · Prioritas ' + f.prioritas + ' · diajukan ' + fmtDT(f.diajukan_close_at) + (Number(f.ditolak_close_count) ? ' · pernah ditolak ' + f.ditolak_close_count + '×' : ''))), el('span', { class: 'link' }, 'Periksa'))),
+      v.total_temuan > (v.temuan || []).length ? el('a', { class: 'link', onclick: () => go('temuan') }, 'Lihat semua (' + v.total_temuan + ') di menu Temuan › Menunggu Verifikasi') : null,
+      v.checklist_menunggu ? el('div', { class: 'card row-card link-card', onclick: () => go('checklist') }, el('div', { class: 'info' }, el('b', {}, v.checklist_menunggu + ' checklist harian menunggu verifikasi'), el('span', {}, 'Wajib hari yang sama · cross-checklist + foto')), el('span', { class: 'link' }, 'Buka')) : null); }
+  /** v1.19: kartu Beranda Mandor/Personil — penutupan yang ditolak verifikator, perlu dibersihkan ulang. */
+  function returnedCard(rows) { if (!rows || !rows.length) return null;
+    return el('div', { class: 'card form verify-card warn' }, el('div', { class: 'section-head' }, el('h3', {}, 'Penutupan ditolak — bersihkan ulang'), el('b', { class: 'verify-count' }, rows.length)),
+      ...rows.map(f => el('div', { class: 'card row-card link-card', onclick: () => go('temuan', { detail: f }) }, el('div', { class: 'info' }, el('b', {}, f.kategori + ' — ' + zonaName(f.zona_id)),
+        el('span', {}, 'Alasan: ' + nz(f.catatan_verifikasi_close, '-') + ' · ditolak ' + f.ditolak_close_count + '×')), el('span', { class: 'link' }, 'Buka')))); }
 
   // ================= HEATMAP (menu navigasi sendiri, v1.7 — semua role; PRD 7.7). Data: API.heatmap (filter periode/kategori/vendor/status)
   // ================= HEATMAP (v1.7 menu sendiri; v1.13: 3 mode — temuan / checklist rekanan / spot-check organik; titik temuan bisa diklik)
@@ -1030,7 +1048,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const ba = el('div', { class: 'ba ba-lg' }, el('div', { class: 'before' }), el('div', { class: f.foto_after ? 'after' : '' }));
     photoImg(f.foto_open).then(i => { if (i.src) ba.firstChild.replaceWith(i); }); if (f.foto_after) photoImg(f.foto_after).then(i => { if (i.src) ba.lastChild.replaceWith(i); });
     modal(el('div', { class: 'form zone-sum' }, el('div', { class: 'section-head' }, el('h3', {}, f.kategori + ' · ' + zonaName(f.zona_id)), el('a', { class: 'link', onclick: closeModal }, 'Tutup')), ba,
-      el('div', { class: 'chip-row' }, el('span', { class: 'pill ' + f.status }, f.status === 'InProgress' ? 'In Progress' : f.status), el('span', { class: 'chip chip-' + f.prioritas }, 'Prioritas ' + f.prioritas), slaChip(f), f.di_luar_zona === 'Y' ? el('span', { class: 'chip' }, 'pin di luar zona') : null, f.skala_pekerjaan === 'PekerjaanBesar' ? el('span', { class: 'chip' }, 'Pekerjaan Besar') : null),
+      el('div', { class: 'chip-row' }, el('span', { class: 'pill ' + f.status }, stLabel(f.status)), el('span', { class: 'chip chip-' + f.prioritas }, 'Prioritas ' + f.prioritas), slaChip(f), f.di_luar_zona === 'Y' ? el('span', { class: 'chip' }, 'pin di luar zona') : null, f.skala_pekerjaan === 'PekerjaanBesar' ? el('span', { class: 'chip' }, 'Pekerjaan Besar') : null),
       el('p', { class: 'hint' }, 'Open ' + fmtDT(f.timestamp_open) + (f.pelapor ? ' oleh ' + f.pelapor : '') + (f.timestamp_inprogress ? ' · In Progress ' + fmtDT(f.timestamp_inprogress) : '') + (f.timestamp_close ? ' · Close ' + fmtDT(f.timestamp_close) : '') + ' · ' + vendorName(f.vendor_id)),
       f.deskripsi ? el('p', { class: 'guide-p' }, f.deskripsi) : null,
       el('button', { class: 'btn', onclick: () => { closeModal(); go('temuan', { detail: f }); } }, 'Buka di menu Temuan')));
@@ -1059,7 +1077,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         el('p', { class: 'hint' }, (d.zona.vendor || '-') + ' · ' + (d.zona.kategori || '-') + ' · ' + nz(d.zona.personil, 0) + ' personil · sejak ' + d.mulai), sw,
         el('div', { class: 'stat-grid stat-grid-3' }, stat(nz(d.temuan.n, 0), 'Temuan (' + nz(d.temuan.open, 0) + ' belum selesai)'), stat(sk(d.spotcheck.rata), 'Rata-rata spot-check (' + nz(d.spotcheck.n, 0) + '×)'), stat(sk(d.checklist.rata), 'Rata-rata checklist (' + nz(d.checklist.n, 0) + '×)')),
         el('h3', {}, 'Temuan'), el('div', { class: 'chip-row' }, ...chips(d.temuan.prioritas, true), ...chips(d.temuan.kategori)),
-        listRows(d.temuan.terakhir.map(f => el('div', { class: 'card row-card', onclick: () => { closeModal(); go('temuan', { detail: f }); } }, el('div', { class: 'info' }, el('b', {}, f.kategori + ' · ' + f.prioritas), el('span', {}, tgl(f.timestamp_open) + ' · ' + f.pelapor)), el('span', { class: 'pill ' + f.status }, f.status === 'InProgress' ? 'In Progress' : f.status)))),
+        listRows(d.temuan.terakhir.map(f => el('div', { class: 'card row-card', onclick: () => { closeModal(); go('temuan', { detail: f }); } }, el('div', { class: 'info' }, el('b', {}, f.kategori + ' · ' + f.prioritas), el('span', {}, tgl(f.timestamp_open) + ' · ' + f.pelapor)), el('span', { class: 'pill ' + f.status }, stLabel(f.status))))),
         el('h3', {}, 'Spot-check'), listRows(d.spotcheck.terakhir.map(s => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, 'Skor ' + nz(s.skor)), el('span', {}, tgl(s.tgl) + ' · ' + s.oleh))))),
         el('h3', {}, 'Checklist harian'), el('p', { class: 'hint' }, nz(d.checklist.hari_terisi, 0) + ' hari terisi' + (Object.keys(d.checklist.status).length ? ' · ' + Object.keys(d.checklist.status).map(k => k + ' ' + d.checklist.status[k]).join(' · ') : '')),
         listRows(d.checklist.terakhir.map(c => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, 'Skor ' + nz(c.skor) + (c.anomali ? ' · anomali' : '')), el('span', {}, tgl(c.tgl) + ' · ' + c.oleh)), el('span', { class: 'pill ' + (c.status === 'Ditolak' ? 'Nonaktif' : 'ok') }, c.status || '-')))),
@@ -1134,10 +1152,11 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     hover(tile, '<b>' + esc(label) + '</b><br>' + esc(sub)); return tile; }
   function findingList(rows) { if (!rows.length) return el('p', { class: 'empty' }, 'Belum ada temuan'); return el('div', { class: 'list' }, ...rows.map(f => { const ba = el('div', { class: 'ba' }, el('div', { class: 'before' }), el('div', { class: f.foto_after ? 'after' : '' }));
     photoImg(f.foto_open).then(i => { if (i.src) ba.firstChild.replaceWith(i); }); if (f.foto_after) photoImg(f.foto_after).then(i => { if (i.src) ba.lastChild.replaceWith(i); });
-    return el('div', { class: 'card row-card', onclick: () => go('temuan', { detail: f }) }, ba, el('div', { class: 'info' }, el('b', {}, f.kategori + ' — ' + zonaName(f.zona_id) + (f.di_luar_zona === 'Y' ? ' (di luar zona)' : '')), el('span', {}, 'Prioritas ' + f.prioritas + ' · target ' + fmtMin(+f.sla_target_menit || slaOf(f.prioritas)) + ' · ' + fmtDT(f.timestamp_open) + (f.skala_pekerjaan === 'PekerjaanBesar' ? ' · Pekerjaan Besar' : '')), slaChip(f)), el('span', { class: 'pill ' + f.status }, f.status === 'InProgress' ? 'In Progress' : f.status)); })); }
+    return el('div', { class: 'card row-card', onclick: () => go('temuan', { detail: f }) }, ba, el('div', { class: 'info' }, el('b', {}, f.kategori + ' — ' + zonaName(f.zona_id) + (f.di_luar_zona === 'Y' ? ' (di luar zona)' : '')), el('span', {}, 'Prioritas ' + f.prioritas + ' · target ' + fmtMin(+f.sla_target_menit || slaOf(f.prioritas)) + ' · ' + fmtDT(f.timestamp_open) + (f.skala_pekerjaan === 'PekerjaanBesar' ? ' · Pekerjaan Besar' : '')), slaChip(f)), el('span', { class: 'pill ' + f.status }, stLabel(f.status))); })); }
   /** v1.11: chip hitung mundur target penyelesaian (menit jam kerja efektif dari server: sla_sisa_menit). Di luar jam kerja hitungan berhenti. */
   function slaChip(f) { if (f.sla_sisa_menit == null) return null; const sisa = Number(f.sla_sisa_menit), batas = Number(f.sla_batas_menit) || 1;
     if (f.status === 'Close') return el('span', { class: 'sla-chip ' + (sisa >= 0 ? 'ok' : 'late') }, sisa >= 0 ? 'Selesai tepat waktu (' + fmtMin(f.sla_terpakai_menit) + ')' : 'Selesai terlambat ' + fmtMin(-sisa));
+    if (f.status === 'MenungguVerifikasi') return el('span', { class: 'sla-chip ' + (sisa >= 0 ? 'ok' : 'late'), title: 'Jam SLA berhenti saat foto after dikirim' }, 'Menunggu verifikasi · diajukan ' + (sisa >= 0 ? 'tepat waktu' : 'terlambat ' + fmtMin(-sisa)));   // v1.19
     return el('span', { class: 'sla-chip ' + (sisa < 0 ? 'late' : sisa <= batas * .25 ? 'warn' : 'ok'), title: 'Jam kerja efektif; target ' + fmtMin(batas) + ' termasuk toleransi' }, sisa < 0 ? 'Terlambat ' + fmtMin(-sisa) : 'Sisa ' + fmtMin(sisa)); }
   /** Target penyelesaian (menit jam kerja efektif) per prioritas dari konfigurasi bobot aktif (PRD 7.4/7.6). */
   const slaOf = p => Number(({ Mendesak: 'sla_mendesak', Tinggi: 'sla_tinggi', Sedang: 'sla_sedang', Rendah: 'sla_rendah' }[p] ? S.boot.config[{ Mendesak: 'sla_mendesak', Tinggi: 'sla_tinggi', Sedang: 'sla_sedang', Rendah: 'sla_rendah' }[p]] : 0)) || 0;
@@ -1151,7 +1170,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     return swrView(c, 'listFindings:' + S.scope, () => api('listFindings', {}), rows => {
       const tabs = el('div', { class: 'tabs' }); const listBox = el('div');
       const render = () => { listBox.replaceChildren(findingList(cur === 'Semua' ? rows : rows.filter(r => r.status === cur))); };
-      ['Semua', 'Open', 'InProgress', 'Close'].forEach(t => tabs.append(el('button', { class: t === cur ? 'active' : '', onclick: e => { cur = t; tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === e.target)); render(); } }, t === 'InProgress' ? 'In Progress' : t)));
+      ['Semua', 'Open', 'InProgress', 'MenungguVerifikasi', 'Close'].forEach(t => tabs.append(el('button', { class: t === cur ? 'active' : '', onclick: e => { cur = t; tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === e.target)); render(); } }, t === 'Semua' ? t : stLabel(t))));
       c.replaceChildren(el('div', { class: 'section-head' }, el('h2', {}, 'Temuan'), el('button', { class: 'btn primary sm', onclick: () => go('temuan', { create: true }) }, '+ Lapor temuan')), slaLegend(), tabs, listBox); render(); });
   };
   async function findingForm(c) {
@@ -1194,8 +1213,9 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const before = el('div', { class: 'card', style: 'padding:6px' }, el('p', { class: 'hint' }, 'Before'), el('div', { class: 'ba', style: 'width:100%;height:150px' }, el('div', { class: 'before' })));
     const after = el('div', { class: 'card', style: 'padding:6px' }, el('p', { class: 'hint' }, 'After'), el('div', { class: 'ba', style: 'width:100%;height:150px' }, el('div', { class: f.foto_after ? 'after' : '' })));
     ba.append(before, after); photoImg(f.foto_open).then(i => i.src && before.querySelector('.ba div').replaceWith(i)); if (f.foto_after) photoImg(f.foto_after).then(i => i.src && after.querySelector('.ba div').replaceWith(i));
-    const info = el('div', { class: 'card' }, el('h3', {}, f.kategori + ' — ' + zonaName(f.zona_id)), el('p', { class: 'hint' }, 'Prioritas ' + f.prioritas + ' · Status ' + f.status + (f.is_operational_exception === 'Y' ? ' · Exception operasional' : '') + (f.di_luar_zona === 'Y' ? ' · Pin di luar zona (zona penanggung jawab dipilih pelapor)' : '')),
-      el('p', { class: 'hint' }, 'Open: ' + fmtDT(f.timestamp_open) + ' · In Progress: ' + fmtDT(f.timestamp_inprogress) + ' · Close: ' + fmtDT(f.timestamp_close)),
+    const info = el('div', { class: 'card' }, el('h3', {}, f.kategori + ' — ' + zonaName(f.zona_id)), el('p', { class: 'hint' }, 'Prioritas ' + f.prioritas + ' · Status ' + stLabel(f.status) + (f.is_operational_exception === 'Y' ? ' · Exception operasional' : '') + (f.di_luar_zona === 'Y' ? ' · Pin di luar zona (zona penanggung jawab dipilih pelapor)' : '')),
+      el('p', { class: 'hint' }, 'Open: ' + fmtDT(f.timestamp_open) + ' · In Progress: ' + fmtDT(f.timestamp_inprogress) + (f.diajukan_close_at ? ' · Foto after diajukan: ' + fmtDT(f.diajukan_close_at) : '') + ' · Close: ' + fmtDT(f.timestamp_close)),
+      Number(f.ditolak_close_count) ? el('p', { class: 'hint warn-text' }, 'Penutupan pernah ditolak ' + f.ditolak_close_count + '× · alasan terakhir: ' + nz(f.catatan_verifikasi_close, '-')) : null,   /* v1.19 */
       el('p', { class: 'hint' }, 'Target SLA: ' + fmtMin(+f.sla_target_menit) + (f.skala_pekerjaan === 'PekerjaanBesar' ? ' · Pekerjaan Besar (' + f.status_persetujuan_skala + ', estimasi ' + fmtDT(f.estimasi_selesai_diajukan) + ')' : '')), f.deskripsi ? el('p', {}, f.deskripsi) : null);
     box.append(el('div', { class: 'section-head' }, el('h2', {}, 'Detail Temuan'), el('a', { class: 'link', onclick: () => go('temuan') }, 'Kembali')), info, ba);
     // aksi per role & status
@@ -1208,10 +1228,22 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       box.append(el('div', { class: 'card form' }, el('h3', {}, 'Tugaskan personil'), pers, el('label', { class: 'toggle' }, pb, 'Ajukan sebagai Pekerjaan Besar (butuh persetujuan)'), fld('Estimasi selesai (jika Pekerjaan Besar)', est), b));
     }
     if ((u.role === 'Mandor' || u.role === 'PersonilRekanan') && f.status === 'InProgress') {
-      const fa = cameraSlot('Foto after (kamera)'); const b = el('button', { class: 'btn primary' }, 'Tandai selesai (Close)');
-      b.addEventListener('click', async () => { if (!fa.dataset.value) return toast('Foto after wajib', true); b.disabled = true; try { const r1 = await api('closeFinding', { id: f.id, foto: fa.dataset.value }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Temuan ditutup'); go('temuan'); } catch (e) { toast(e.message, true); b.disabled = false; } });
-      box.append(el('div', { class: 'card form' }, el('h3', {}, 'Selesaikan'), fa, b));
+      // v1.19: foto after diverifikasi pelapor/Admin; panduan sudut sama dengan foto before
+      const fa = cameraSlot('Foto after (kamera)'); const b = el('button', { class: 'btn primary' }, 'Kirim foto after (minta verifikasi)');
+      b.addEventListener('click', async () => { if (!fa.dataset.value) return toast('Foto after wajib', true); b.disabled = true; try { const r1 = await api('closeFinding', { id: f.id, foto: fa.dataset.value }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Foto after terkirim — menunggu verifikasi pelapor/Admin'); go('temuan'); } catch (e) { toast(e.message, true); b.disabled = false; } });
+      box.append(el('div', { class: 'card form' }, el('h3', {}, 'Selesaikan'), Number(f.ditolak_close_count) ? el('p', { class: 'hint warn-text' }, 'Ditolak sebelumnya: ' + nz(f.catatan_verifikasi_close, '-') + ' — bersihkan ulang dulu.') : null,
+        el('p', { class: 'hint' }, 'Ambil foto after dari sudut & posisi yang SAMA dengan foto Before di atas, setelah area benar-benar bersih. Temuan baru Close setelah disetujui pelapor/Admin lingkup.'), fa, b));
     }
+    // v1.19: verifikasi penutupan — pelapor (bukan rekanan), Admin, Super Admin (server memeriksa lingkup)
+    const bisaVerif = f.status === 'MenungguVerifikasi' && (u.role === 'SuperAdmin' || u.role === 'Admin' || (String(f.reporter_id) === String(u.id) && u.role !== 'Mandor' && u.role !== 'PersonilRekanan'));
+    if (bisaVerif) {
+      const alasan = el('textarea', { rows: 2, placeholder: 'Wajib bila menolak — mis. masih ada ceceran di sudut kiri' });
+      const kirim = async ok => { if (!ok && alasan.value.trim().length < 3) return toast('Tulis alasan penolakan', true);
+        try { await api('verifyClose', { id: f.id, setujui: ok, alasan: alasan.value.trim() }); toast(ok ? 'Disetujui — temuan Close' : 'Ditolak — dikembalikan ke rekanan (In Progress)'); go('temuan'); } catch (e) { toast(e.message, true); } };
+      box.append(el('div', { class: 'card form verify-card' }, el('h3', {}, 'Verifikasi penutupan'), el('p', { class: 'hint' }, 'Bandingkan foto Before dan After di atas: apakah area yang SAMA dan sudah benar-benar bersih?'),
+        el('p', { class: 'hint' }, 'Diajukan ' + fmtDT(f.diajukan_close_at) + (Number(f.ditolak_close_count) ? ' · pernah ditolak ' + f.ditolak_close_count + '×' : '')),
+        fld('Alasan (bila ditolak)', alasan), el('div', { class: 'form-row' }, el('button', { class: 'btn primary', onclick: () => kirim(true) }, 'Setujui (Close)'), el('button', { class: 'btn danger', onclick: () => kirim(false) }, 'Tolak (bersihkan ulang)'))));
+    } else if (f.status === 'MenungguVerifikasi') box.append(el('p', { class: 'hint' }, 'Menunggu verifikasi pelapor atau Admin lingkup · diajukan ' + fmtDT(f.diajukan_close_at)));
     if ((u.role === 'KaryawanOrganik' || u.role === 'Admin' || u.role === 'SuperAdmin') && f.status_persetujuan_skala === 'Menunggu') {
       box.append(el('div', { class: 'card form' }, el('h3', {}, 'Persetujuan Pekerjaan Besar'), el('p', { class: 'hint' }, 'Estimasi diajukan: ' + fmtDT(f.estimasi_selesai_diajukan)), el('div', { class: 'form-row' },
         el('button', { class: 'btn primary', onclick: () => review(true) }, 'Setujui'), el('button', { class: 'btn danger', onclick: () => review(false) }, 'Tolak'))));
@@ -1430,7 +1462,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       sec('5b. Contoh HQI akhir (bobot yang berlaku sekarang)',
         tbl(['Komponen', 'Skor', 'Bobot', 'Kontribusi'], [noTemuan ? ['Temuan', 'indikator', '0%', '0'] : ['Temuan', String(exTemuan), pct('bobot_temuan'), String(r1(exTemuan * w('bobot_temuan')))], ['SLA', String(exSLA), pct('bobot_sla'), String(r1(exSLA * w('bobot_sla')))], ['Spot-Check', String(exSpot), pct('bobot_spotcheck'), String(r1(exSpot * w('bobot_spotcheck')))], ['Checklist Harian', String(exCk), pct('bobot_checklist'), String(r1(exCk * w('bobot_checklist')))], ['Kepatuhan Checklist', String(exKep), pct('bobot_kepatuhan'), String(r1(exKep * w('bobot_kepatuhan')))]]),
         contoh(kode('HQI = ' + (noTemuan ? '' : r1(exTemuan * w('bobot_temuan')) + ' + ') + r1(exSLA * w('bobot_sla')) + ' + ' + r1(exSpot * w('bobot_spotcheck')) + ' + ' + r1(exCk * w('bobot_checklist')) + ' + ' + r1(exKep * w('bobot_kepatuhan')) + ' = ' + exHQI), ' → predikat ', el('b', {}, grade(exHQI)), '. Perhatikan komponen mana yang paling menekan skor: di contoh ini SLA (penyelesaian terlambat) dan spot-check.')),
-      sec('6. Alur temuan', tbl(['Status', 'Siapa', 'Yang dilakukan'], [['Open', 'Siapa saja', 'Lapor: foto kamera, pin lokasi (zona terdeteksi otomatis), kategori, prioritas'], ['In Progress', 'Mandor', 'Menunjuk personil pelaksana; opsional mengajukan Pekerjaan Besar'], ['Close', 'Personil / Mandor', 'Mengunggah foto after sebagai bukti selesai']])),
+      sec('6. Alur temuan', tbl(['Status', 'Siapa', 'Yang dilakukan'], [['Open', 'Siapa saja', 'Lapor: foto kamera, pin lokasi (zona terdeteksi otomatis), kategori, prioritas'], ['In Progress', 'Mandor', 'Menunjuk personil pelaksana; opsional mengajukan Pekerjaan Besar'], ['Menunggu Verifikasi', 'Personil / Mandor', 'Mengunggah foto after (sudut sama dengan before); jam SLA berhenti di sini'], ['Close', 'Pelapor / Admin lingkup', 'Membandingkan before–after lalu Setujui (Close) atau Tolak dengan alasan (kembali In Progress, tercatat sebagai indikator)']])),
       sec('7. Peran pengguna', ul('Personil Rekanan: melapor & menutup temuan.', 'Mandor/Koordinator: checklist harian, tindak lanjut temuan.', 'Karyawan Organik: spot-check, verifikasi checklist, temuan; ikut leaderboard.', 'Admin (per lingkup): zona, pertanyaan, vendor, user, jadwal, bobot, review anomali; juga bisa spot-check.', 'Manajemen: dashboard & laporan seluruh lingkup.', 'Super Admin: seluruh lingkup, kelola lingkup dan user semua role; juga bisa spot-check.')),
       el('p', { class: 'hint', style: 'text-align:center' }, 'Nilai bobot, target SLA, toleransi, dan ambang anomali di halaman ini diambil dari konfigurasi yang sedang berlaku (Admin › Bobot).'));
   };
@@ -1529,7 +1561,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   function baRingkasRows(x, nClose) { const d = x.rincian || {}, t = d.temuan || {}, sl = d.sla || {}, sp = d.spotcheck || {}, ck = d.checklist || {}, kp = d.kepatuhan || {};
     const pr = (t.per_prioritas || []).filter(p => p.n).map(p => p.prioritas + ' ' + p.n).join(', '); const zs = kp.zona || [];
     const teks = {
-      temuan: nz(t.n, 0) + ' temuan' + (pr ? ' (' + pr + ')' : '') + ' · ' + nClose + ' selesai (Close)',
+      temuan: nz(t.n, 0) + ' temuan' + (pr ? ' (' + pr + ')' : '') + ' · ' + nClose + ' selesai (Close)' + (t.ditolak_close ? ' · ' + t.ditolak_close + '× penutupan ditolak' : ''),
       sla: nz(sl.n_dinilai, 0) ? nz(sl.tepat, 0) + ' tepat waktu · ' + nz(sl.telat, 0) + ' terlambat' + (sl.open_telat ? ' · ' + sl.open_telat + ' open lewat target' : '') : 'Belum ada temuan yang dinilai',
       spotcheck: nz(sp.n, 0) + (sp.kuota ? ' dari kuota ' + sp.kuota : '') + ' spot-check' + (sp.rata != null ? ' · rata-rata ' + sp.rata : '') + (sp.dari_checklist ? ' · ' + sp.dari_checklist + ' diisi skor checklist' : ''),
       checklist: nz(ck.n, 0) + ' masuk · ' + nz(ck.valid, 0) + ' dihitung' + (ck.menunggu ? ' · ' + ck.menunggu + ' menunggu' : '') + (ck.ditolak ? ' · ' + ck.ditolak + ' ditolak' : ''),
@@ -1648,7 +1680,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const pr = (t.per_prioritas || []).filter(x => x.n).map(x => x.prioritas + ' ' + x.n).join(', ');
     return [
       { key: 'temuan', nama: 'Temuan' + (Number(cfg.bobot_temuan) === 0 ? ' (indikator)' : ''), skor: h.skor_temuan, bobot: 'bobot_temuan',
-        poin: [nz(t.n, 0) + ' temuan pada periode ini' + (pr ? ' (' + pr + ')' : ''), t.exception ? t.exception + ' temuan saat jendela operasional (tidak mengurangi skor)' : null, 'Total pengurang ' + nz(t.deduksi, 0) + ' → skor 100 − ' + nz(t.deduksi, 0) + ' (minimal 0)'],
+        poin: [nz(t.n, 0) + ' temuan pada periode ini' + (pr ? ' (' + pr + ')' : ''), t.exception ? t.exception + ' temuan saat jendela operasional (tidak mengurangi skor)' : null, t.ditolak_close ? 'Penutupan ditolak verifikator: ' + t.ditolak_close + '× pada ' + t.temuan_ditolak + ' temuan (indikator)' : null, t.menunggu_verifikasi ? t.menunggu_verifikasi + ' menunggu verifikasi penutupan' : null, 'Total pengurang ' + nz(t.deduksi, 0) + ' → skor 100 − ' + nz(t.deduksi, 0) + ' (minimal 0)'],
         aturan: '100 dikurangi Σ(bobot prioritas × pengali temuan berulang di zona & kategori yang sama dalam 30 hari). Bobot 0% berarti hanya indikator — tidak memengaruhi HQI.' },
       { key: 'sla', nama: 'SLA', skor: h.skor_sla, bobot: 'bobot_sla',
         poin: [nz(sl.n_dinilai, 0) ? nz(sl.n_dinilai, 0) + ' temuan dinilai' : 'Belum ada temuan yang dinilai → skor 100', nz(sl.tepat, 0) + ' selesai tepat waktu, ' + nz(sl.telat, 0) + ' terlambat', sl.open_telat ? sl.open_telat + ' masih open dan sudah lewat target (dihitung terlambat)' : null,
@@ -1936,7 +1968,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         list.replaceChildren(...(rows.length ? rows.map(r => { const ph = el('div', { class: 'ba', style: 'width:76px;height:52px' }, el('div', { class: 'before' })); const fid = r.foto_open || r.foto1 || r.foto; if (fid) photoImg(fid).then(i => { if (i.src) ph.firstChild.replaceWith(i); });
           const t = tipe.value; const main = t === 'temuan' ? r.kategori + ' · ' + zonaName(r.zona_id) : zonaName(r.zona_id) + ' · skor ' + nz(r.skor);
           const sub = t === 'temuan' ? 'Prioritas ' + r.prioritas + ' · ' + fmtDT(r.timestamp_open) + ' · pelapor ' + r.oleh : fmtDT(r.timestamp) + ' · oleh ' + r.oleh + (r.status_verifikasi ? ' · ' + r.status_verifikasi : '') + (r.is_anomali === 'Y' ? ' · ANOMALI' : '');
-          const badge = t === 'temuan' ? el('span', { class: 'pill ' + r.status }, r.status === 'InProgress' ? 'In Progress' : r.status) : el('span', { class: 'pill ' + scoreCls(r.skor) }, nz(r.skor));
+          const badge = t === 'temuan' ? el('span', { class: 'pill ' + r.status }, stLabel(r.status)) : el('span', { class: 'pill ' + scoreCls(r.skor) }, nz(r.skor));
           const openIt = () => { if (t === 'temuan') openFindingPopup(r); else openEntriesPopup(S.boot.zones.find(z => z.id === r.zona_id) || { nama_area: zonaName(r.zona_id), vendor_id: r.vendor_id }, [Object.assign({}, r, { oleh: r.oleh })], t); };
           return el('div', { class: 'card row-card user-row', onclick: openIt }, ph, el('div', { class: 'info' }, el('b', {}, main), el('span', {}, sub)), badge, el('div', { class: 'row-actions' }, el('button', { class: 'btn danger sm', onclick: e => { e.stopPropagation(); hapus(r, label); } }, 'Hapus'))); }) : [el('p', { class: 'empty' }, 'Tidak ada data pada filter ini')])); }
       catch (e) { list.replaceChildren(el('p', { class: 'empty err' }, e.message)); } };
