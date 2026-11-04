@@ -445,6 +445,20 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   const localIso = (d) => { d = d || new Date(); const p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); };
   const monthStart = () => localIso().slice(0, 8) + '01';
   const today = () => localIso().slice(0, 10);   // v1.18: tanggal lokal (sebelumnya UTC)
+  // v1.20: frekuensi checklist zona (1/2/3/7 hari) & blok tetap — cermin zonaFrek_/blokKey_/blokAkhir_ di Hqi.gs (hasil harus sama)
+  const zFrek = z => { const n = Number(z && z.frekuensi_hari); return n === 2 || n === 3 || n === 7 ? n : 1; };
+  const labelFrek = n => n === 7 ? '1×/minggu' : n > 1 ? '1×/' + n + ' hari' : '1×/hari';
+  const tglLokal = t => new Date(String(t).slice(0, 10) + 'T00:00:00');
+  const tglPendek = t => tglLokal(t).toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' });
+  function blokKey(t, n) { t = String(t).slice(0, 10); if (n === 1) return t; const d = tglLokal(t);
+    if (n === 7) { d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return 'W' + localIso(d).slice(0, 10); }
+    let k = 0; const x = tglLokal(t.slice(0, 8) + '01'); for (; x <= d; x.setDate(x.getDate() + 1)) if (x.getDay() % 6) k++;
+    return t.slice(0, 7) + '-b' + Math.floor((Math.max(1, k) - 1) / n); }
+  function blokAkhir(t, n) { const k = blokKey(t, n); let akhir = String(t).slice(0, 10); const d = tglLokal(akhir);
+    for (let i = 0; i < 10; i++) { d.setDate(d.getDate() + 1); const s2 = localIso(d).slice(0, 10); if (blokKey(s2, n) !== k) break; if (d.getDay() % 6) akhir = s2; } return akhir; }
+  const periodeIni = n => n === 1 ? 'hari ini' : n === 7 ? 'minggu ini' : 'periode ini';
+  /** v1.20: teks kepatuhan satu zona dari server (frekuensi, terisi, wajib). */
+  const kpTeks = z => z.frekuensi > 1 ? z.terisi + ' / ' + z.wajib + ' blok (' + labelFrek(z.frekuensi) + ')' : nz(z.terisi, z.hari_terisi) + ' / ' + nz(z.wajib, '-') + ' hari';
 
   // ---------------- storage aman (iframe Apps Script bisa memblokir localStorage di beberapa browser)
   const mem = {}; const store = { get: k => { try { return localStorage.getItem(k); } catch (e) { return mem[k] || null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { mem[k] = v; } }, del: k => { try { localStorage.removeItem(k); } catch (e) { delete mem[k]; } } };
@@ -947,7 +961,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const ck = g.checklist_hari_ini || { terisi: 0, total_zona: 0 }, ckPct = ck.total_zona ? Math.round(ck.terisi / ck.total_zona * 100) : null;
     const stats = el('div', { class: 'stat-grid stat-grid-5' }, stat(nz(d.stat.temuan_open, 0), 'Temuan Open'), stat(fmtMin(d.stat.rata_ttr_menit), 'Rata-rata TTR'), stat(nz(d.stat.spotcheck, 0), 'Spot-Check Bulan Ini'), stat(nz(d.stat.personil_total, 0), 'Personil Rekanan (' + nz(d.stat.zona_aktif, 0) + ' zona)'),
       ringStat(slaPct, 'SLA tepat waktu', slaTot ? sla.tepat + ' dari ' + slaTot + ' temuan Close' : 'Belum ada temuan Close'),
-      ringStat(ckPct, 'Checklist hari ini', ck.terisi + ' dari ' + ck.total_zona + ' zona terisi'));
+      ringStat(ckPct, 'Checklist periode berjalan', ck.terisi + ' dari ' + ck.total_zona + ' zona terisi (sesuai frekuensi zona)'));
     const st = g.status || { Open: 0, InProgress: 0, Close: 0 };
     const charts = el('div', { class: 'chart-grid' },
       chartCard('Temuan 14 hari terakhir', 'Jumlah temuan Open (dibuat) vs Close (selesai) per hari', chartColumns((g.tren || []).map(t => ({ label: t.tgl.slice(8) + '/' + t.tgl.slice(5, 7), values: [t.dibuka, t.ditutup] })), ['Open', 'Close'])),
@@ -1230,12 +1244,12 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     if ((u.role === 'Mandor' || u.role === 'PersonilRekanan') && f.status === 'InProgress') {
       // v1.19: foto after diverifikasi pelapor/Admin; panduan sudut sama dengan foto before
       const fa = cameraSlot('Foto after (kamera)'); const b = el('button', { class: 'btn primary' }, 'Kirim foto after (minta verifikasi)');
-      b.addEventListener('click', async () => { if (!fa.dataset.value) return toast('Foto after wajib', true); b.disabled = true; try { const r1 = await api('closeFinding', { id: f.id, foto: fa.dataset.value }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Foto after terkirim — menunggu verifikasi pelapor/Admin'); go('temuan'); } catch (e) { toast(e.message, true); b.disabled = false; } });
+      b.addEventListener('click', async () => { if (!fa.dataset.value) return toast('Foto after wajib', true); b.disabled = true; try { const r1 = await api('closeFinding', { id: f.id, foto: fa.dataset.value }); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Foto after terkirim — menunggu verifikasi Organik/Admin'); go('temuan'); } catch (e) { toast(e.message, true); b.disabled = false; } });
       box.append(el('div', { class: 'card form' }, el('h3', {}, 'Selesaikan'), Number(f.ditolak_close_count) ? el('p', { class: 'hint warn-text' }, 'Ditolak sebelumnya: ' + nz(f.catatan_verifikasi_close, '-') + ' — bersihkan ulang dulu.') : null,
-        el('p', { class: 'hint' }, 'Ambil foto after dari sudut & posisi yang SAMA dengan foto Before di atas, setelah area benar-benar bersih. Temuan baru Close setelah disetujui pelapor/Admin lingkup.'), fa, b));
+        el('p', { class: 'hint' }, 'Ambil foto after dari sudut & posisi yang SAMA dengan foto Before di atas, setelah area benar-benar bersih. Temuan baru Close setelah disetujui pelapor (atau Karyawan Organik bila pelapornya rekanan) / Admin lingkup.'), fa, b));
     }
     // v1.19: verifikasi penutupan — pelapor (bukan rekanan), Admin, Super Admin (server memeriksa lingkup)
-    const bisaVerif = f.status === 'MenungguVerifikasi' && (u.role === 'SuperAdmin' || u.role === 'Admin' || (String(f.reporter_id) === String(u.id) && u.role !== 'Mandor' && u.role !== 'PersonilRekanan'));
+    const bisaVerif = f.status === 'MenungguVerifikasi' && u.role !== 'Mandor' && u.role !== 'PersonilRekanan' && (u.role === 'SuperAdmin' || u.role === 'Admin' || String(f.reporter_id) === String(u.id) || (u.role === 'KaryawanOrganik' && f.pelapor_rekanan === 'Y'));   // v1.20.1: temuan dari rekanan → Organik lingkup (server memeriksa lingkup)
     if (bisaVerif) {
       const alasan = el('textarea', { rows: 2, placeholder: 'Wajib bila menolak — mis. masih ada ceceran di sudut kiri' });
       const kirim = async ok => { if (!ok && alasan.value.trim().length < 3) return toast('Tulis alasan penolakan', true);
@@ -1243,7 +1257,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       box.append(el('div', { class: 'card form verify-card' }, el('h3', {}, 'Verifikasi penutupan'), el('p', { class: 'hint' }, 'Bandingkan foto Before dan After di atas: apakah area yang SAMA dan sudah benar-benar bersih?'),
         el('p', { class: 'hint' }, 'Diajukan ' + fmtDT(f.diajukan_close_at) + (Number(f.ditolak_close_count) ? ' · pernah ditolak ' + f.ditolak_close_count + '×' : '')),
         fld('Alasan (bila ditolak)', alasan), el('div', { class: 'form-row' }, el('button', { class: 'btn primary', onclick: () => kirim(true) }, 'Setujui (Close)'), el('button', { class: 'btn danger', onclick: () => kirim(false) }, 'Tolak (bersihkan ulang)'))));
-    } else if (f.status === 'MenungguVerifikasi') box.append(el('p', { class: 'hint' }, 'Menunggu verifikasi pelapor atau Admin lingkup · diajukan ' + fmtDT(f.diajukan_close_at)));
+    } else if (f.status === 'MenungguVerifikasi') box.append(el('p', { class: 'hint' }, 'Menunggu verifikasi ' + (f.pelapor_rekanan === 'Y' ? 'Karyawan Organik' : 'pelapor') + ' atau Admin lingkup · diajukan ' + fmtDT(f.diajukan_close_at)));
     if ((u.role === 'KaryawanOrganik' || u.role === 'Admin' || u.role === 'SuperAdmin') && f.status_persetujuan_skala === 'Menunggu') {
       box.append(el('div', { class: 'card form' }, el('h3', {}, 'Persetujuan Pekerjaan Besar'), el('p', { class: 'hint' }, 'Estimasi diajukan: ' + fmtDT(f.estimasi_selesai_diajukan)), el('div', { class: 'form-row' },
         el('button', { class: 'btn primary', onclick: () => review(true) }, 'Setujui'), el('button', { class: 'btn danger', onclick: () => review(false) }, 'Tolak'))));
@@ -1261,22 +1275,23 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     if (verifier) { await verificationQueue(c); c.firstChild.after(subBar); return; }
     // v1.12: daftar checklist vendor 7 hari terakhir → zona yang sudah diisi hari ini dikunci (server juga menolak dobel), rekap hari kerja, catatan akhir pekan
     const dOf = iso => String(iso || '').slice(0, 10); let hist, tanpaSinyal = false;
-    try { hist = await api('myChecklists', { hari: 7 }); saved.set('myChecklists', hist); }   /* v1.18 (O2): tanpa sinyal → riwayat tersimpan di HP */
+    try { hist = await api('myChecklists', { hari: 10 }); saved.set('myChecklists', hist); }   /* v1.18 (O2): tanpa sinyal → riwayat tersimpan di HP */
     catch (e) { hist = saved.get('myChecklists'); if (!hist || !e.network) throw e; tanpaSinyal = true; }
     const antre = (await myQueue()).filter(it => it.body && it.body.action === 'submitDailyChecklist' && !it.rejected);   /* v1.18.1: yang ditolak server tidak dihitung "Menunggu terkirim" & tidak mengunci zona (tetap ada di daftar antrean) */
     hist = antre.map(it => ({ id: it.body.client_id, zona_id: it.body.zona_id, timestamp: it.body.waktu_isi, skor: '–', status_verifikasi: 'Menunggu terkirim', oleh: S.user.nama, antrean: true })).concat(hist.filter(h => !antre.some(it => it.body.client_id === h.id)));
-    const done = hist.filter(x => dOf(x.timestamp) === today()); const zones = S.boot.zones;
+    const zones = S.boot.zones; const zOf = id => zones.find(z => z.id === id) || {};   // v1.20: zona dikunci per blok frekuensinya (hari ini / periode / minggu ini)
+    const done = hist.filter(x => { const n = zFrek(zOf(x.zona_id)); return blokKey(dOf(x.timestamp), n) === blokKey(today(), n) && (n === 1 || x.status_verifikasi !== 'Ditolak'); });
     const doneZ = id => done.find(x => x.zona_id === id);
-    const zsel = sel(zones.map(z => ({ v: z.id, t: z.nama_area + (doneZ(z.id) ? ' ✓ sudah diisi hari ini' : '') })));
+    const zsel = sel(zones.map(z => { const n = zFrek(z), d = doneZ(z.id); return { v: z.id, t: z.nama_area + (d ? ' ✓ sudah diisi ' + periodeIni(n) + (n > 1 ? ' (' + tglPendek(dOf(d.timestamp)) + ')' : '') : n > 1 ? ' · ' + labelFrek(n) + ', wajib s/d ' + tglPendek(blokAkhir(today(), n)) : '') }; }));
     Array.from(zsel.options).forEach(o => { if (doneZ(o.value)) o.disabled = true; }); const firstOpen = zones.find(z => !doneZ(z.id)); if (firstOpen) zsel.value = firstOpen.id;
     const wd = new Date().getDay(), weekend = wd === 0 || wd === 6;
     const stPill = x => el('span', { class: 'pill ' + (x.status_verifikasi === 'Ditolak' ? 'Nonaktif' : x.status_verifikasi === 'Menunggu' || x.antrean ? 'Open' : 'ok') }, x.status_verifikasi || '-');
     const recap = zones.map(z => ({ z, n: new Set(hist.filter(x => x.zona_id === z.id && x.status_verifikasi !== 'Ditolak').map(x => dOf(x.timestamp))).size }));
-    const todayCard = el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Checklist hari ini'), el('span', { class: 'hint' }, done.length + ' dari ' + zones.length + ' zona')),
+    const todayCard = el('div', { class: 'card form' }, el('div', { class: 'section-head' }, el('h3', {}, 'Checklist periode berjalan'), el('span', { class: 'hint' }, done.length + ' dari ' + zones.length + ' zona')),
       tanpaSinyal ? el('p', { class: 'hint warn-text' }, 'Tanpa sinyal: data zona & pertanyaan dari HP. Checklist yang dikirim disimpan di HP (bisa beberapa zona) dan terkirim otomatis saat ada sinyal.') : null,
-      weekend ? el('p', { class: 'hint warn-text' }, 'Hari ini akhir pekan — checklist tidak wajib (hari kerja Senin–Jumat) dan tidak memengaruhi kepatuhan.') : null,
-      done.length ? el('div', { class: 'list' }, ...done.map(x => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, zonaName(x.zona_id) + ' · skor ' + nz(x.skor)), el('span', {}, fmtDT(x.timestamp) + ' · oleh ' + x.oleh + (x.is_anomali === 'Y' ? ' · anomali' : ''))), stPill(x)))) : el('p', { class: 'hint' }, 'Belum ada zona yang diisi hari ini.'),
-      el('p', { class: 'hint' }, '7 hari terakhir: ' + recap.map(r => r.z.nama_area + ' ' + r.n + ' hari').join(' · ')));
+      weekend ? el('p', { class: 'hint warn-text' }, 'Hari ini akhir pekan — untuk zona 1×/hari checklist tidak wajib (hari kerja Senin–Jumat). Zona 2/3/7 hari dihitung per blok.') : null,
+      done.length ? el('div', { class: 'list' }, ...done.map(x => el('div', { class: 'card row-card' }, el('div', { class: 'info' }, el('b', {}, zonaName(x.zona_id) + ' · skor ' + nz(x.skor)), el('span', {}, fmtDT(x.timestamp) + ' · oleh ' + x.oleh + (x.is_anomali === 'Y' ? ' · anomali' : ''))), stPill(x)))) : el('p', { class: 'hint' }, 'Belum ada zona yang diisi pada periode berjalan.'),
+      el('p', { class: 'hint' }, '10 hari terakhir: ' + recap.map(r => r.z.nama_area + ' ' + r.n + ' hari (' + labelFrek(zFrek(r.z)) + ')').join(' · ')));
     // v1.6: Mandor mengisi jumlah personil rekanan per zona (dipakai statistik Beranda & label zona)
     const perInputs = {}; const perCard = el('div', { class: 'card form' }, el('h3', {}, 'Personil rekanan per zona'), el('p', { class: 'hint' }, 'Isi jumlah personil yang bertugas di tiap zona Anda (bisa diubah kapan saja).'),
       ...zones.map(z => { perInputs[z.id] = el('input', { type: 'number', min: 0, value: Number(z.jumlah_personil) || 0 }); return fld(z.nama_area, perInputs[z.id]); }),
@@ -1362,12 +1377,12 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const isMandor = S.user.role === 'Mandor'; const bln = el('input', { type: 'month', value: today().slice(0, 7) }); const box = el('div', { class: 'form' }); let seq = 0;
     const load = async () => { if (!bln.value) return; const my = ++seq; box.replaceChildren(el('p', { class: 'empty' }, 'Memuat...'));
       try { const r = await api('checklistCompliance', monthRange(bln.value)); if (my !== seq) return; const thisMonth = bln.value === today().slice(0, 7);
-        const hiCell = z => r.akhir_pekan ? 'akhir pekan' : z.hari_ini ? '✓ ' + (CK_STATUS[z.hari_ini] || z.hari_ini) : 'belum diisi';
-        const heads = ['Zona'].concat(isMandor ? [] : ['Vendor'], ['Hari terisi', 'Kepatuhan'], thisMonth ? ['Hari ini'] : []);
-        box.replaceChildren(el('p', { class: 'hint' }, 'Periode ' + r.periode.mulai + ' s/d ' + r.periode.selesai + ' · ' + r.hari_kerja + ' hari kerja (Senin–Jumat). Kepatuhan = hari checklist terisi (selain yang ditolak) ÷ hari kerja per zona; skor vendor = rata-rata zonanya — sama dengan komponen Kepatuhan di HQI.'),
+        const hiCell = z => z.blok_ini ? '✓ ' + (CK_STATUS[z.blok_ini] || z.blok_ini) + (z.frekuensi > 1 && z.blok_ini_tgl ? ' (' + tglPendek(z.blok_ini_tgl) + ')' : '') : z.frekuensi === 1 && r.akhir_pekan ? 'akhir pekan' : 'belum diisi' + (z.frekuensi > 1 && z.blok_akhir ? ' · s/d ' + tglPendek(z.blok_akhir) : '');   /* v1.20 */
+        const heads = ['Zona'].concat(isMandor ? [] : ['Vendor'], ['Frekuensi', 'Terisi', 'Kepatuhan'], thisMonth ? ['Periode berjalan'] : []);
+        box.replaceChildren(el('p', { class: 'hint' }, 'Periode ' + r.periode.mulai + ' s/d ' + r.periode.selesai + ' · ' + r.hari_kerja + ' hari kerja (Senin–Jumat). Kepatuhan per zona: zona 1×/hari = hari terisi ÷ hari kerja; zona 2/3 hari & mingguan = blok terisi ÷ jumlah blok (tepat 1 checklist per blok). Yang ditolak tidak dihitung; skor vendor = rata-rata zonanya — sama dengan komponen Kepatuhan di HQI.'),
           r.vendor.length ? el('div', { class: 'stat-grid' }, ...r.vendor.map(v => stat(v.skor + '%', (isMandor ? 'Kepatuhan' : v.vendor) + ' · ' + v.zona + ' zona'))) : null,
           r.zona.length ? el('div', { class: 'tbl-wrap' }, el('table', { class: 'tbl' }, el('tr', {}, ...heads.map(h => el('th', {}, h))),
-            ...r.zona.slice().sort((a, b) => a.pct - b.pct).map(z => el('tr', {}, el('td', {}, z.nama), isMandor ? null : el('td', {}, z.vendor), el('td', {}, z.hari_terisi + ' / ' + r.hari_kerja), el('td', {}, scorePill(z.pct, z.pct + '%')), thisMonth ? el('td', {}, hiCell(z)) : null)))) : el('p', { class: 'empty' }, 'Belum ada zona aktif pada lingkup ini')); }
+            ...r.zona.slice().sort((a, b) => a.pct - b.pct).map(z => el('tr', {}, el('td', {}, z.nama), isMandor ? null : el('td', {}, z.vendor), el('td', {}, labelFrek(z.frekuensi || 1)), el('td', {}, nz(z.terisi, z.hari_terisi) + ' / ' + nz(z.wajib, '-') + (z.frekuensi > 1 ? ' blok' : ' hari')), el('td', {}, scorePill(z.pct, z.pct + '%')), thisMonth ? el('td', {}, hiCell(z)) : null)))) : el('p', { class: 'empty' }, 'Belum ada zona aktif pada lingkup ini')); }
       catch (e) { if (my === seq) box.replaceChildren(el('p', { class: 'empty err' }, e.message)); } };
     bln.addEventListener('change', load);
     c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Checklist Harian'), el('p', {}, 'Kepatuhan pengisian checklist per zona')), bar, el('div', { class: 'card form' }, fld('Bulan', bln), box)); load();
@@ -1455,14 +1470,14 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         contoh('Spot-check 1 di Zona A (sedang jendela drain), 4 item: Ya, Cukup, Tidak, dan item genangan = N/A → (100 + 50 + 0) ÷ 3 = 50.', el('br'), 'Spot-check 2 di Zona B, 4 item: Ya, Ya, Cukup, Ya → (100 + 100 + 50 + 100) ÷ 4 = 87,5.', el('br'), kode('Skor Spot-Check = (50 + 87,5) ÷ 2 = ' + exSpot),
           kuotaSpot ? [el('br'), 'Contoh kuota: vendor punya 2 zona, kuota ' + kuotaSpot + ' × 2 = ' + (kuotaSpot * 2) + ' spot-check sebulan, tetapi hanya 2 yang dilakukan (rata-rata ' + exSpot + ') dan checklist terverifikasinya ' + exCk + ' → ', kode('Skor Spot-Check = (' + exSpot + ' × 2 + ' + exCk + ' × ' + (kuotaSpot * 2 - 2) + ') ÷ ' + (kuotaSpot * 2) + ' = ' + r1((exSpot * 2 + exCk * (kuotaSpot * 2 - 2)) / (kuotaSpot * 2)))] : null)),
       sec('5. Skor Checklist Harian & Kepatuhan',
-        p('Mandor mengisi checklist tiap zona sekali sehari dengan foto langsung dari kamera (ber-watermark tanggal/jam). Skor item sama seperti spot-check. Hanya entri berstatus Terverifikasi atau Terverifikasi Otomatis yang dihitung; entri Ditolak dikeluarkan. Sejak v1.14 verifikasi berupa cross-checklist: Karyawan Organik menjawab ulang item yang sama, dan skor yang dipakai HQI adalah skor Organik (skor Mandor tetap tersimpan); bila tidak diverifikasi sampai batas waktu, skor Mandor yang dipakai. Vendor yang tidak mengisi checklist sama sekali pada periode mendapat skor 0.'),
-        ul('Karyawan Organik wajib memverifikasi pada hari yang sama sebelum batas jam pabrik; lewat batas → otomatis Terverifikasi (vendor tidak dirugikan, kejadian tercatat di log dan tidak memberi poin leaderboard).', 'Validasi silang: bila selisih skor checklist dan spot-check di zona & hari yang sama melebihi ' + cfg.ambang_batas_anomali + ' poin, entri ditandai anomali; jika Admin menyatakan penyimpangan nyata, entri dikeluarkan dari skor.', 'Kepatuhan = hari checklist terisi ÷ hari kerja (Senin–Jumat) per zona, dirata-rata antar zona vendor.'),
+        p('Mandor mengisi checklist tiap zona sesuai frekuensi zona yang diatur Admin (setiap hari kerja, sekali tiap 2 atau 3 hari kerja, atau sekali per minggu — tepat 1 checklist per periode) dengan foto langsung dari kamera (ber-watermark tanggal/jam). Skor item sama seperti spot-check. Hanya entri berstatus Terverifikasi atau Terverifikasi Otomatis yang dihitung; entri Ditolak dikeluarkan. Sejak v1.14 verifikasi berupa cross-checklist: Karyawan Organik menjawab ulang item yang sama, dan skor yang dipakai HQI adalah skor Organik (skor Mandor tetap tersimpan); bila tidak diverifikasi sampai batas waktu, skor Mandor yang dipakai. Vendor yang tidak mengisi checklist sama sekali pada periode mendapat skor 0.'),
+        ul('Karyawan Organik wajib memverifikasi pada hari yang sama sebelum batas jam pabrik; lewat batas → otomatis Terverifikasi (vendor tidak dirugikan, kejadian tercatat di log dan tidak memberi poin leaderboard).', 'Validasi silang: bila selisih skor checklist dan spot-check di zona & hari yang sama melebihi ' + cfg.ambang_batas_anomali + ' poin, entri ditandai anomali; jika Admin menyatakan penyimpangan nyata, entri dikeluarkan dari skor.', 'Kepatuhan per zona: zona 1×/hari = hari checklist terisi ÷ hari kerja (Senin–Jumat); zona 2/3 hari & mingguan = periode (blok) yang terisi ÷ jumlah blok pada rentang. Dirata-rata antar zona vendor.'),
         contoh('Mandor mengisi 4 checklist di Zona A bulan ini dengan skor 100, 75, 50, dan 90. Entri 90 ditolak Karyawan Organik (dikeluarkan); entri 50 selisihnya dengan spot-check hari itu 45 poin (> ' + cfg.ambang_batas_anomali + ') dan Admin menyatakan penyimpangan nyata (dikeluarkan). Sisa: 100 dan 75 → ', kode('Skor Checklist = (100 + 75) ÷ 2 = 87,5'), '. Pada ilustrasi HQI di bawah dipakai Skor Checklist ' + exCk + '.', el('br'),
-          'Kepatuhan: bulan ini 25 hari kerja (Senin–Sabtu). Zona A terisi 20 hari → 80; Zona B terisi 25 hari → 100 → ', kode('Skor Kepatuhan = (80 + 100) ÷ 2 = 90'), '. Ilustrasi HQI di bawah memakai ' + exKep + '.')),
+          'Kepatuhan: bulan ini 20 hari kerja (Senin–Jumat). Zona A (1×/hari) terisi 16 hari → 80; Zona B (sekali per minggu) terisi 4 dari 4 minggu → 100 → ', kode('Skor Kepatuhan = (80 + 100) ÷ 2 = 90'), '. Ilustrasi HQI di bawah memakai ' + exKep + '.')),
       sec('5b. Contoh HQI akhir (bobot yang berlaku sekarang)',
         tbl(['Komponen', 'Skor', 'Bobot', 'Kontribusi'], [noTemuan ? ['Temuan', 'indikator', '0%', '0'] : ['Temuan', String(exTemuan), pct('bobot_temuan'), String(r1(exTemuan * w('bobot_temuan')))], ['SLA', String(exSLA), pct('bobot_sla'), String(r1(exSLA * w('bobot_sla')))], ['Spot-Check', String(exSpot), pct('bobot_spotcheck'), String(r1(exSpot * w('bobot_spotcheck')))], ['Checklist Harian', String(exCk), pct('bobot_checklist'), String(r1(exCk * w('bobot_checklist')))], ['Kepatuhan Checklist', String(exKep), pct('bobot_kepatuhan'), String(r1(exKep * w('bobot_kepatuhan')))]]),
         contoh(kode('HQI = ' + (noTemuan ? '' : r1(exTemuan * w('bobot_temuan')) + ' + ') + r1(exSLA * w('bobot_sla')) + ' + ' + r1(exSpot * w('bobot_spotcheck')) + ' + ' + r1(exCk * w('bobot_checklist')) + ' + ' + r1(exKep * w('bobot_kepatuhan')) + ' = ' + exHQI), ' → predikat ', el('b', {}, grade(exHQI)), '. Perhatikan komponen mana yang paling menekan skor: di contoh ini SLA (penyelesaian terlambat) dan spot-check.')),
-      sec('6. Alur temuan', tbl(['Status', 'Siapa', 'Yang dilakukan'], [['Open', 'Siapa saja', 'Lapor: foto kamera, pin lokasi (zona terdeteksi otomatis), kategori, prioritas'], ['In Progress', 'Mandor', 'Menunjuk personil pelaksana; opsional mengajukan Pekerjaan Besar'], ['Menunggu Verifikasi', 'Personil / Mandor', 'Mengunggah foto after (sudut sama dengan before); jam SLA berhenti di sini'], ['Close', 'Pelapor / Admin lingkup', 'Membandingkan before–after lalu Setujui (Close) atau Tolak dengan alasan (kembali In Progress, tercatat sebagai indikator)']])),
+      sec('6. Alur temuan', tbl(['Status', 'Siapa', 'Yang dilakukan'], [['Open', 'Siapa saja', 'Lapor: foto kamera, pin lokasi (zona terdeteksi otomatis), kategori, prioritas'], ['In Progress', 'Mandor', 'Menunjuk personil pelaksana; opsional mengajukan Pekerjaan Besar'], ['Menunggu Verifikasi', 'Personil / Mandor', 'Mengunggah foto after (sudut sama dengan before); jam SLA berhenti di sini'], ['Close', 'Pelapor / Organik lingkup (bila pelapor rekanan) / Admin lingkup', 'Membandingkan before–after lalu Setujui (Close) atau Tolak dengan alasan (kembali In Progress, tercatat sebagai indikator)']])),
       sec('7. Peran pengguna', ul('Personil Rekanan: melapor & menutup temuan.', 'Mandor/Koordinator: checklist harian, tindak lanjut temuan.', 'Karyawan Organik: spot-check, verifikasi checklist, temuan; ikut leaderboard.', 'Admin (per lingkup): zona, pertanyaan, vendor, user, jadwal, bobot, review anomali; juga bisa spot-check.', 'Manajemen: dashboard & laporan seluruh lingkup.', 'Super Admin: seluruh lingkup, kelola lingkup dan user semua role; juga bisa spot-check.')),
       el('p', { class: 'hint', style: 'text-align:center' }, 'Nilai bobot, target SLA, toleransi, dan ambang anomali di halaman ini diambil dari konfigurasi yang sedang berlaku (Admin › Bobot).'));
   };
@@ -1480,14 +1495,14 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   const CK_STATUS = { Menunggu: 'Menunggu', Terverifikasi: 'Terverifikasi', TerverifikasiOtomatis: 'Terverifikasi otomatis', Ditolak: 'Ditolak' };
   /**
    * v1.17: tabel tambahan Laporan — spot-check, checklist harian, kepatuhan checklist per zona. Satu sumber untuk layar, PDF, dan Excel.
-   * Kepatuhan diambil dari hqi[].rincian.kepatuhan (hari terisi ÷ hari kerja Sen–Jum per zona vendor).
+   * Kepatuhan diambil dari hqi[].rincian.kepatuhan (v1.20: per frekuensi zona — hari terisi ÷ hari kerja, atau blok terisi ÷ jumlah blok).
    */
   function reportTables(r) {
     const sp = r.spotcheck || [], ck = r.checklist || [], lim = r.batas_baris || 500;
     const avgOf = a => a.length ? r1(a.reduce((x, y) => x + y, 0) / a.length) : null;
     const spAvg = avgOf(sp.map(x => Number(x.skor) || 0)), ckDone = ck.filter(x => x.skor_final != null), ckAvg = avgOf(ckDone.map(x => Number(x.skor_final) || 0));
     const kp = []; (r.hqi || []).forEach(h => { const k = (h.rincian || {}).kepatuhan || {};
-      (k.zona || []).forEach(z => kp.push([h.vendor, z.nama, z.hari_terisi + ' / ' + nz(k.hari_kerja, 0) + ' hari', z.pct + '%']));
+      (k.zona || []).forEach(z => kp.push([h.vendor, z.nama, kpTeks(z), z.pct + '%']));
       kp.push([h.vendor, 'Skor kepatuhan (rata-rata zona)', '', nz(h.skor_kepatuhan) + '%']); });
     const more = a => a.length >= lim ? ' · menampilkan ' + lim + ' baris pertama' : '';
     return [
@@ -1565,7 +1580,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       sla: nz(sl.n_dinilai, 0) ? nz(sl.tepat, 0) + ' tepat waktu · ' + nz(sl.telat, 0) + ' terlambat' + (sl.open_telat ? ' · ' + sl.open_telat + ' open lewat target' : '') : 'Belum ada temuan yang dinilai',
       spotcheck: nz(sp.n, 0) + (sp.kuota ? ' dari kuota ' + sp.kuota : '') + ' spot-check' + (sp.rata != null ? ' · rata-rata ' + sp.rata : '') + (sp.dari_checklist ? ' · ' + sp.dari_checklist + ' diisi skor checklist' : ''),
       checklist: nz(ck.n, 0) + ' masuk · ' + nz(ck.valid, 0) + ' dihitung' + (ck.menunggu ? ' · ' + ck.menunggu + ' menunggu' : '') + (ck.ditolak ? ' · ' + ck.ditolak + ' ditolak' : ''),
-      kepatuhan: nz(kp.hari_kerja, 0) + ' hari kerja · ' + (zs.length ? zs.slice(0, 3).map(z => z.nama + ' ' + z.hari_terisi + ' hari (' + z.pct + '%)').join(', ') + (zs.length > 3 ? ' · +' + (zs.length - 3) + ' zona' : '') : 'belum ada zona'),
+      kepatuhan: nz(kp.hari_kerja, 0) + ' hari kerja · ' + (zs.length ? zs.slice(0, 3).map(z => z.nama + ' ' + kpTeks(z) + ' (' + z.pct + '%)').join(', ') + (zs.length > 3 ? ' · +' + (zs.length - 3) + ' zona' : '') : 'belum ada zona'),
     };
     return hqiBasis(x).map(b => [b.nama, b.bobot, teks[b.key] || '', b.skor, hqiContrib(b, S.boot.config)]); }   // v1.17.5: + kontribusi ke HQI
   /**
@@ -1693,7 +1708,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         poin: [nz(ck.n, 0) + ' checklist masuk, ' + nz(ck.valid, 0) + ' dihitung', ck.menunggu ? ck.menunggu + ' masih menunggu verifikasi' : null, ck.ditolak ? ck.ditolak + ' ditolak (tidak dihitung)' : null, ck.otomatis ? ck.otomatis + ' terverifikasi otomatis' : null, ck.anomali_dikeluarkan ? ck.anomali_dikeluarkan + ' anomali dikeluarkan' : null, ck.rata_mandor != null ? 'Rata-rata skor versi Mandor ' + ck.rata_mandor : null, !nz(ck.n, 0) ? 'Tidak ada checklist pada periode ini → skor 0' : null],
         aturan: 'Rata-rata skor checklist yang sudah terverifikasi (skor hasil cross-checklist Karyawan Organik). Ditolak dan anomali yang disetujui tidak dihitung.' },
       { key: 'kepatuhan', nama: 'Kepatuhan Checklist', skor: h.skor_kepatuhan, bobot: 'bobot_kepatuhan',
-        poin: [nz(kp.hari_kerja, 0) + ' hari kerja (Senin–Jumat) pada periode ini'].concat((kp.zona || []).map(z => z.nama + ': terisi ' + z.hari_terisi + ' hari → ' + z.pct + '%')).concat((kp.zona || []).length ? [] : ['Vendor belum punya zona aktif → skor 100']),
+        poin: [nz(kp.hari_kerja, 0) + ' hari kerja (Senin–Jumat) pada periode ini'].concat((kp.zona || []).map(z => z.nama + ': terisi ' + kpTeks(z) + ' → ' + z.pct + '%')).concat((kp.zona || []).length ? [] : ['Vendor belum punya zona aktif → skor 100']),
         aturan: 'Untuk tiap zona vendor: hari checklist terisi ÷ hari kerja × 100, lalu dirata-rata seluruh zona.' },
     ];
   }
@@ -1771,7 +1786,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   async function adminZona(b) {
     if (needScope(b)) return;
     const zoneQs = zid => S.boot.questions.filter(q => qZones(q) !== 'ALL' && qAppliesTo(q, zid));   // pertanyaan khusus (bukan "Semua zona") yang berlaku di zona ini
-    const mapBox = el('div', { class: 'map', style: 'height:340px' }); const nama = el('input', { placeholder: 'Nama area/zona' }), desk = el('input', { placeholder: 'Deskripsi (opsional)' }), vend = sel(S.boot.vendors.map(v => ({ v: v.id, t: v.nama }))), kat = sel(S.boot.kategoriZona), per = el('input', { type: 'number', min: 0, value: 0, placeholder: '0' });
+    const mapBox = el('div', { class: 'map', style: 'height:340px' }); const nama = el('input', { placeholder: 'Nama area/zona' }), desk = el('input', { placeholder: 'Deskripsi (opsional)' }), vend = sel(S.boot.vendors.map(v => ({ v: v.id, t: v.nama }))), kat = sel(S.boot.kategoriZona), per = el('input', { type: 'number', min: 0, value: 0, placeholder: '0' }), frek = sel([{ v: '1', t: 'Setiap hari kerja (1×/hari)' }, { v: '2', t: 'Sekali tiap 2 hari kerja' }, { v: '3', t: 'Sekali tiap 3 hari kerja' }, { v: '7', t: 'Sekali per minggu' }]);   /* v1.20 */
     let editing = null, drawer = null; const save = el('button', { class: 'btn primary' }, 'Simpan zona'); const drawBtn = el('button', { class: 'btn sm' }, 'Gambar polygon baru'); const finishBtn = el('button', { class: 'btn primary sm' }, 'Selesai gambar'); const undoBtn = el('button', { class: 'btn sm' }, 'Hapus titik terakhir'); const addBtn = el('button', { class: 'btn sm' }, 'Lanjut tambah titik'); const resetBtn = el('button', { class: 'btn sm' }, 'Batalkan perubahan polygon'); const list = el('div', { class: 'list' });
     const HINT_NEW = 'Tap "Gambar polygon baru", lalu tap peta titik demi titik (minimal 3), akhiri dengan "Selesai gambar" atau double-click. Untuk mengubah zona yang sudah ada, tap "Edit" di daftar zona.';
     const HINT_EDIT = 'Mengedit polygon: geser titik putih untuk memindahkannya · tap titik kecil di tengah sisi untuk menambah titik · tap titik putih untuk menghapusnya (min. 3 titik) · "Lanjut tambah titik" menambah titik di ujung · "Gambar ulang polygon" menggambar dari awal untuk zona ini. Akhiri dengan "Simpan zona".';
@@ -1779,12 +1794,12 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const editTitle = el('h3', {}, 'Zona baru'); const cancelEdit = el('a', { class: 'link', onclick: () => resetForm() }, 'Batal edit'); cancelEdit.hidden = true;
     const qCard = el('div', { class: 'card form' }); qCard.hidden = true;
     b.replaceChildren(mapBox, el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, drawBtn, addBtn, finishBtn, undoBtn, resetBtn), drawHint,
-      el('div', { class: 'card form' }, el('div', { class: 'section-head' }, editTitle, cancelEdit), fld('Nama area', nama), fld('Deskripsi', desk), el('div', { class: 'form-row' }, fld('Vendor penanggung jawab', vend), fld('Kategori zona', kat)), fld('Jumlah personil rekanan di zona ini', per), save),
+      el('div', { class: 'card form' }, el('div', { class: 'section-head' }, editTitle, cancelEdit), fld('Nama area', nama), fld('Deskripsi', desk), el('div', { class: 'form-row' }, fld('Vendor penanggung jawab', vend), fld('Kategori zona', kat)), el('div', { class: 'form-row' }, fld('Jumlah personil rekanan di zona ini', per), fld('Frekuensi checklist harian', frek)), save),
       qCard, el('div', { class: 'section-head' }, el('h3', {}, 'Daftar zona')), list);
     let map = null; try { await loadMaps(); map = newMap(mapBox); } catch (e) { mapError(mapBox, e.message); drawBtn.disabled = true; drawHint.textContent = 'Peta tidak tersedia — zona tidak bisa digambar/diedit sampai peta aktif.'; drawHint.className = 'hint err'; }
     const setEditUI = () => { const ed = !!editing; editTitle.textContent = ed ? 'Edit zona: ' + editing.nama_area : 'Zona baru'; cancelEdit.hidden = !ed; resetBtn.hidden = !ed; qCard.hidden = !ed;
       drawBtn.textContent = ed ? 'Gambar ulang polygon' : 'Gambar polygon baru'; drawHint.textContent = ed ? HINT_EDIT : HINT_NEW; addBtn.hidden = !(drawer && drawer.polygon && drawer.count() >= 3) || (drawer && drawer.drawing); if (ed) renderQs(); };
-    const resetForm = () => { editing = null; nama.value = desk.value = ''; per.value = 0; if (drawer) drawer.clear(); finishBtn.hidden = undoBtn.hidden = true; setEditUI(); };
+    const resetForm = () => { editing = null; nama.value = desk.value = ''; per.value = 0; frek.value = '1'; if (drawer) drawer.clear(); finishBtn.hidden = undoBtn.hidden = true; setEditUI(); };
     if (map) { drawer = polygonDrawer(map, { fillOpacity: .25 }); drawZones(map, S.boot.zones); fitZones(map, S.boot.zones);
       drawer.onDone = () => { finishBtn.hidden = undoBtn.hidden = true; setEditUI(); toast(editing ? 'Polygon diperbarui — tap "Simpan zona" untuk menyimpan' : 'Polygon selesai — lengkapi metadata lalu simpan'); };
       drawBtn.addEventListener('click', () => { if (!editing) { nama.value = desk.value = ''; } drawer.start(); finishBtn.hidden = undoBtn.hidden = false; addBtn.hidden = true; toast('Tap peta titik demi titik, lalu "Selesai gambar"'); });
@@ -1809,17 +1824,17 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         el('p', { class: 'hint' }, 'Centang pertanyaan yang berlaku untuk zona "' + z.nama_area + '" (checklist harian & spot-check). Pertanyaan dibuat/diedit di Survey Builder; satu pertanyaan boleh dipakai di banyak zona. Berlaku untuk pengisian berikutnya (non-retroaktif).'),
         all.length ? el('div', { class: 'pick-list' }, ...rows) : el('p', { class: 'empty' }, 'Belum ada pertanyaan aktif — buat dulu di Survey Builder')); };
     const renderList = () => { list.replaceChildren(...(S.boot.zonesAll && S.boot.zonesAll.length ? S.boot.zonesAll : S.boot.zones).map(z => { const aktif = z.status !== 'Nonaktif';
-      const edit = focusQ => { try { editing = z; nama.value = z.nama_area || ''; desk.value = z.deskripsi || ''; vend.value = z.vendor_id || ''; kat.value = z.kategori || ''; per.value = Number(z.jumlah_personil) || 0; if (drawer) { finishBtn.hidden = undoBtn.hidden = true; drawer.load(z.polygon || []); } setEditUI();
+      const edit = focusQ => { try { editing = z; nama.value = z.nama_area || ''; desk.value = z.deskripsi || ''; vend.value = z.vendor_id || ''; kat.value = z.kategori || ''; per.value = Number(z.jumlah_personil) || 0; frek.value = String(zFrek(z)); if (drawer) { finishBtn.hidden = undoBtn.hidden = true; drawer.load(z.polygon || []); } setEditUI();
         (focusQ === true ? qCard : mapBox).scrollIntoView({ behavior: 'smooth', block: 'start' }); if (focusQ !== true) toast('Zona "' + z.nama_area + '" dimuat: ubah polygon di peta dan/atau data di form, lalu "Simpan zona"'); }
         catch (err) { toast('Gagal memuat zona untuk diedit: ' + err.message, true); console.error(err); } };   // v1.7.1: kesalahan ditampilkan, bukan diam
       const tgl = el('button', { class: 'btn sm', onclick: async e => { e.stopPropagation(); try { await apiSave('upsertZone', { zone: { id: z.id, status: aktif ? 'Nonaktif' : 'Aktif' } }); toast(aktif ? 'Zona dinonaktifkan' : 'Zona diaktifkan kembali'); refresh('zona'); } catch (err) { toast(err.message, true); } } }, aktif ? 'Nonaktifkan' : 'Aktifkan');
       const del = el('button', { class: 'btn danger sm', onclick: async e => { e.stopPropagation(); if (!await confirmModal('Hapus zona "' + z.nama_area + '"?\nBila sudah ada temuan/checklist/spot-check di zona ini, zona hanya dinonaktifkan agar histori tetap valid.')) return;
         try { const r = await apiSave('deleteZone', { id: z.id }); toast(r.mode === 'hapus' ? 'Zona dihapus permanen' : 'Zona dinonaktifkan (ada ' + r.terkait + ' data terkait)'); refresh('zona'); } catch (err) { toast(err.message, true); } } }, 'Hapus');
-      return el('div', { class: 'card row-card zone-row', onclick: () => edit() }, el('div', { class: 'info' }, el('b', {}, z.nama_area), el('span', {}, vendorName(z.vendor_id) + ' · ' + (z.kategori || '-') + ' · ' + (Number(z.jumlah_personil) || 0) + ' personil · ' + zoneQs(z.id).length + ' pertanyaan khusus zona')), el('span', { class: 'pill ' + (aktif ? 'ok' : 'Nonaktif') }, aktif ? 'Aktif' : 'Nonaktif'),
+      return el('div', { class: 'card row-card zone-row', onclick: () => edit() }, el('div', { class: 'info' }, el('b', {}, z.nama_area), el('span', {}, vendorName(z.vendor_id) + ' · ' + (z.kategori || '-') + ' · ' + (Number(z.jumlah_personil) || 0) + ' personil · checklist ' + labelFrek(zFrek(z)) + ' · ' + zoneQs(z.id).length + ' pertanyaan khusus zona')), el('span', { class: 'pill ' + (aktif ? 'ok' : 'Nonaktif') }, aktif ? 'Aktif' : 'Nonaktif'),
         el('div', { class: 'row-actions' }, el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); edit(); } }, 'Edit'), el('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); edit(true); } }, 'Pertanyaan'), tgl, del)); })); };
     renderList();
     save.addEventListener('click', async () => { if (!drawer || !drawer.polygon) return toast('Gambar polygon dulu', true); if (drawer.drawing && !drawer.finish()) return; if (drawer.count() < 3) return toast('Polygon minimal 3 titik', true); if (!nama.value) return toast('Nama area wajib', true); const path = drawer.path();
-      try { await apiSave('upsertZone', { zone: { id: editing ? editing.id : undefined, nama_area: nama.value, deskripsi: desk.value, vendor_id: vend.value, kategori: kat.value, polygon: path, jumlah_personil: Number(per.value) || 0 } }); toast(editing ? 'Zona diperbarui' : 'Zona tersimpan'); refresh('zona'); } catch (e) { toast(e.message, true); } });
+      try { await apiSave('upsertZone', { zone: { id: editing ? editing.id : undefined, nama_area: nama.value, deskripsi: desk.value, vendor_id: vend.value, kategori: kat.value, polygon: path, jumlah_personil: Number(per.value) || 0, frekuensi_hari: Number(frek.value) || 1 } }); toast(editing ? 'Zona diperbarui' : 'Zona tersimpan'); refresh('zona'); } catch (e) { toast(e.message, true); } });
   }
   /** SuperAdmin: kelola lingkup/pabrik (v1.4) — tambah lingkup baru mis. "Operasi Pabrik IIIA". */
   async function adminLingkup(b) {
