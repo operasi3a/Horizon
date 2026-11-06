@@ -501,7 +501,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   const netErr = msg => { const e = new Error(msg); e.network = true; return e; };
   function callServerRaw(body, opt) {
     const bad = () => new Error('Server tidak mengembalikan data yang valid (respons kosong) — coba lagi; bila berulang, laporkan aksi "' + body.action + '"');
-    if (window.google && google.script && google.script.run) return new Promise((res, rej) => google.script.run.withSuccessHandler(j => j && typeof j === 'object' ? res(j) : rej(bad())).withFailureHandler(e => rej(new Error((e && e.message) || String(e)))).apiCall(body));
+    if (window.google && google.script && google.script.run) return new Promise((res, rej) => { const tg = opt && opt.timeout ? setTimeout(() => rej(netErr('Server tidak menjawab (sinyal lemah)')), opt.timeout) : 0; google.script.run.withSuccessHandler(j => { clearTimeout(tg); j && typeof j === 'object' ? res(j) : rej(bad()); }).withFailureHandler(e => { clearTimeout(tg); rej(new Error((e && e.message) || String(e))); }).apiCall(body); });
     if (!C.API_URL) return Promise.reject(new Error('Backend tidak dikonfigurasi (API_URL kosong)'));
     const ac = opt && opt.timeout && window.AbortController ? new AbortController() : null; const tm = ac ? setTimeout(() => ac.abort(), opt.timeout) : 0;
     return fetch(C.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), redirect: 'follow', signal: ac ? ac.signal : undefined })
@@ -509,13 +509,21 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       .then(j => { clearTimeout(tm); if (j && typeof j === 'object') return j; throw bad(); })
       .catch(e => { clearTimeout(tm); if (e.network) throw e; if (e.name === 'AbortError') throw netErr('Server tidak menjawab (sinyal lemah)'); if (e.name === 'TypeError' || /Failed to fetch|NetworkError|Load failed/i.test(e.message)) throw netErr('Tidak dapat menghubungi server — periksa koneksi internet'); throw e; });
   }
+  /** v1.20.2: aksi baca dibatasi waktunya dan dicoba ulang SEKALI bila server diam/sibuk. Hanya aksi di daftar ini — aksi tulis tidak pernah diulang otomatis (bisa tersimpan dua kali). */
+  const READ_ACTIONS = ['bootstrap', 'photo', 'photos', 'listFindings', 'listPendingVerification', 'myChecklists', 'myChecklistsToday', 'history', 'checklistCompliance', 'adminRecords', 'listSpotChecks', 'dashboard', 'heatmap', 'report', 'notifications', 'leaderboard', 'listUsers', 'zoneSummary', 'listQuestions', 'listSchedules', 'listPabrik', 'adminLog', 'archiveInfo', 'listAnomali', 'listPekerjaanBesar'];
+  const readTimeout = acts => acts.some(a => a === 'photo' || a === 'photos') ? 90000 : 45000;   // foto besar di sinyal lemah butuh lebih lama
+  async function callRead(body, acts) {
+    const opt = { timeout: readTimeout(acts) };
+    try { return await callServer(body, opt); }
+    catch (e) { if (!e.network || !navigator.onLine || body.token !== S.token) throw e; await new Promise(r => setTimeout(r, 1500)); return callServer(body, opt); }
+  }
   async function api(action, payload, opt) {
     const body = Object.assign({ action, token: S.token }, payload || {});
     if (S.boot && S.boot.isMulti && body.pabrik_id === undefined) body.pabrik_id = S.scope;   // role global / multi-lingkup: kirim lingkup aktif
     const offl = !!idb.db && WRITE_ACTIONS.includes(action);   // v1.18 (O1/O3): kode unik + waktu isi; antrean bila offline atau sinyal putus saat mengirim
     if (offl) { if (!body.client_id) body.client_id = newClientId(); if (!body.waktu_isi) body.waktu_isi = localIso(); }
     if (offl && !navigator.onLine) return queueWrite(body);
-    let j; try { j = await callServer(body, offl ? { timeout: 90000 } : null); } catch (e) { if (offl && e.network) return queueWrite(body, e.message); throw e; }
+    let j; try { j = READ_ACTIONS.includes(action) ? await callRead(body, [action]) : await callServer(body, offl ? { timeout: 90000 } : null); } catch (e) { if (offl && e.network) return queueWrite(body, e.message); throw e; }
     if (!j.ok) { if (/login/i.test(j.error) && !(opt && opt.silent) && body.token === S.token) logout(); throw new Error(j.error); }   // v1.16: jawaban terlambat dari token lama tidak mengeluarkan sesi baru
     return j.data;
   }
@@ -523,7 +531,8 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
    *  Hasil: array {ok,data,error} sesuai urutan calls. Lingkup aktif ditambahkan seperti api(). */
   async function apiBatch(calls, opt) {
     const multi = S.boot && S.boot.isMulti, tok = S.token;
-    const j = await callServer({ action: 'batch', token: tok, calls: calls.map(c => multi && c.pabrik_id === undefined ? Object.assign({ pabrik_id: S.scope }, c) : c) });
+    const body = { action: 'batch', token: tok, calls: calls.map(c => multi && c.pabrik_id === undefined ? Object.assign({ pabrik_id: S.scope }, c) : c) };
+    const acts = calls.map(c => c.action), j = await (acts.every(a => READ_ACTIONS.includes(a)) ? callRead(body, acts) : callServer(body));   // v1.20.2
     const err = !j.ok ? j.error : ((j.data || []).find(r => !r.ok && /login/i.test(r.error)) || {}).error;
     if (err && /login/i.test(err) && !(opt && opt.silent) && tok === S.token) logout();
     if (!j.ok) throw new Error(j.error);
