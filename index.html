@@ -267,6 +267,8 @@ html[data-theme="light"] .zone-label.score-ok{color:#047857}html[data-theme="lig
 img.hz-photo,.camera-slot img{cursor:zoom-in}
 .photo-peek{position:fixed;z-index:70;pointer-events:none;border-radius:14px;overflow:hidden;background:#000;box-shadow:0 24px 60px rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.25)}.photo-peek img{display:block;width:100%;height:auto;max-height:inherit;object-fit:contain}
 .lightbox{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;cursor:zoom-out;padding:16px}.lightbox img{max-width:100%;max-height:88vh;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.6)}.lb-hint{color:#cbd5e1;font-size:12px}
+.map-mini{height:180px}.lok{display:grid;gap:6px;margin:4px 0 6px}.lok-desk{font-size:12.5px;color:var(--head);margin:0}.lok-ket{margin:0}
+details.card>summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--text)}details.card[open]>summary{margin-bottom:6px} /* v1.22.1: kartu hapus temuan di detail */
 </style>
 <style>
 /* Logo Horizon (dibuat otomatis dari PNG di root horizon/: pangkas margin transparan -> perkecil -> base64). Jangan diedit manual. */
@@ -814,6 +816,17 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   /** Zona terdekat dari titik (jarak ke titik sudut polygon) — untuk pin di luar zona. */
   function nearestZone(ll) { let best = null, bd = Infinity; S.boot.zones.forEach(z => z.polygon.forEach(p => { const d = Math.pow(+p.lat - ll.lat, 2) + Math.pow(+p.lng - ll.lng, 2); if (d < bd) { bd = d; best = z; } })); return best; }
   /** Posisikan peta agar seluruh zona terlihat (posisi awal default); false bila belum ada zona. */
+  /**
+   * v1.23 (keputusan Rudy 26 Nov 2026): bantuan lokasi verifikasi checklist. geoNow = satu pembacaan GPS HP (null bila ditolak/gagal);
+   * zonaTengah = titik tengah polygon zona; jarakArah = jarak & arah mata angin dari posisi saya.
+   */
+  function geoNow(maxAge) { return new Promise(res => { if (!navigator.geolocation) return res(null); navigator.geolocation.getCurrentPosition(p => res({ lat: p.coords.latitude, lng: p.coords.longitude, akurasi: Math.round(p.coords.accuracy) }), () => res(null), { enableHighAccuracy: true, timeout: 10000, maximumAge: maxAge == null ? 30000 : maxAge }); }); }
+  function zonaTengah(z) { const p = (z && Array.isArray(z.polygon) ? z.polygon : []).map(toLL).filter(x => isFinite(x[0]) && isFinite(x[1])); if (!p.length) return null; return { lat: p.reduce((a, x) => a + x[0], 0) / p.length, lng: p.reduce((a, x) => a + x[1], 0) / p.length }; }
+  function jarakArah(a, b) { const R = 6371000, rad = x => x * Math.PI / 180; const dLa = rad(b.lat - a.lat), dLn = rad(b.lng - a.lng);
+    const h = Math.sin(dLa / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLn / 2) ** 2; const m = 2 * R * Math.asin(Math.sqrt(h));
+    const brg = (Math.atan2(Math.sin(dLn) * Math.cos(rad(b.lat)), Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) - Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(dLn)) * 180 / Math.PI + 360) % 360;
+    return { m, arah: ['utara', 'timur laut', 'timur', 'tenggara', 'selatan', 'barat daya', 'barat', 'barat laut'][Math.round(brg / 45) % 8] }; }
+  const fmtJarak = m => m < 1000 ? Math.round(m / 10) * 10 + ' m' : (m / 1000).toFixed(1).replace('.', ',') + ' km';
   function fitZones(map, zones) { const pts = []; (zones || S.boot.zones).forEach(z => (Array.isArray(z.polygon) ? z.polygon : []).forEach(p => { const ll = toLL(p); if (isFinite(ll[0]) && isFinite(ll[1])) pts.push(ll); })); if (pts.length < 2) return false; map.fitBounds(L.latLngBounds(pts), { padding: [28, 28], maxZoom: 18 }); return true; }
   /** Heatmap kanvas: gradasi radial per titik, intensitas mengikuti bobot. points = [{lat,lng,w}] */
   function heatLayer(map, points, radius) {
@@ -1305,6 +1318,13 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         el('button', { class: 'btn primary', onclick: () => review(true) }, 'Setujui'), el('button', { class: 'btn danger', onclick: () => review(false) }, 'Tolak'))));
       async function review(ok) { try { await api('reviewPekerjaanBesar', { id: f.id, setujui: ok }); toast(ok ? 'Disetujui' : 'Ditolak'); go('temuan'); } catch (e) { toast(e.message, true); } }
     }
+    /* v1.22.1: hapus temuan yang tidak sesuai langsung dari detail — Super Admin & Admin lingkup; lingkup = pabrik temuan itu (tidak perlu memilih lingkup dulu). Sama dengan Admin › Data: alasan wajib, tercatat di log. */
+    if (u.role === 'SuperAdmin' || u.role === 'Admin') {
+      const alasan = el('input', { placeholder: 'mis. salah zona / uji coba / foto tidak sesuai / dobel' }); const bh = el('button', { class: 'btn danger' }, 'Hapus temuan ini');
+      bh.addEventListener('click', async () => { if (alasan.value.trim().length < 3) return toast('Tulis alasan penghapusan', true); if (!await confirmModal('Hapus permanen temuan ' + f.kategori + ' · ' + zonaName(f.zona_id) + '?\nTidak bisa dibatalkan (foto tetap di Drive); tercatat di log beserta alasan.')) return; bh.disabled = true;
+        try { await api('deleteRecord', { tipe: 'temuan', id: f.id, alasan: alasan.value.trim(), pabrik_id: f.pabrik_id }); toast('Temuan dihapus'); go('temuan'); } catch (e) { toast(e.message, true); bh.disabled = false; } });
+      box.append(el('details', { class: 'card form' }, el('summary', {}, 'Hapus temuan (tidak sesuai)'), el('p', { class: 'hint' }, 'Untuk temuan salah zona, uji coba, dobel, atau foto tidak sesuai. Skor HQI dihitung ulang otomatis.'), fld('Alasan (wajib)', alasan), bh));
+    }
     c.replaceChildren(box);
   }
 
@@ -1338,7 +1358,8 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const perInputs = {}; const perCard = el('div', { class: 'card form' }, el('h3', {}, 'Personil rekanan per zona'), el('p', { class: 'hint' }, 'Isi jumlah personil yang bertugas di tiap zona Anda (bisa diubah kapan saja).'),
       ...zones.map(z => { perInputs[z.id] = el('input', { type: 'number', min: 0, value: Number(z.jumlah_personil) || 0 }); return fld(z.nama_area, perInputs[z.id]); }),
       el('button', { class: 'btn sm', onclick: async e => { e.target.disabled = true; try { const w = zones.map(z => ({ z, v: Number(perInputs[z.id].value) || 0 })).filter(x => x.v !== (Number(x.z.jumlah_personil) || 0)).map(x => ({ action: 'setZonePersonil', zona_id: x.z.id, jumlah: x.v })); if (w.length) await saveAndBoot(w); toast('Jumlah personil tersimpan'); }   /* v1.16: semua zona + bootstrap dalam satu panggilan */ catch (err) { toast(err.message, true); } e.target.disabled = false; } }, 'Simpan jumlah personil'));
-    const kk = kondisiCtl(() => renderItems()); const items = el('div'); const f1 = cameraSlot('Foto 1 (wajib)'), f2 = cameraSlot('Foto 2 (opsional)');
+    const kk = kondisiCtl(() => renderItems()); const items = el('div'); let geo = null; geoNow().then(g => { if (g) geo = g; });   /* v1.23: geotag lokasi foto Mandor */
+    const f1 = cameraSlot('Foto 1 (wajib)', () => geoNow(5000).then(g => { if (g) geo = g; })), f2 = cameraSlot('Foto 2 (opsional)');
     const btn = el('button', { class: 'btn primary' }, 'Kirim checklist');
     const renderItems = () => { const qs = qFor(zsel.value, 'ChecklistHarian'); items.replaceChildren(...(qs.length ? qs.map(q => triItem(q, kk.on())) : [el('p', { class: 'empty' }, 'Belum ada pertanyaan untuk zona ini — hubungi Admin')])); };
     zsel.addEventListener('change', renderItems); renderItems();
@@ -1348,7 +1369,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
       el('p', { class: 'hint', style: 'text-align:center' }, 'Setelah dikirim: Menunggu Verifikasi Karyawan Organik (batas hari ini)'), zones.length ? perCard : null); c.firstChild.after(subBar);
     if (zones.length && !firstOpen) { btn.disabled = true; btn.textContent = 'Semua zona sudah diisi hari ini'; }
     btn.addEventListener('click', async () => { if (doneZ(zsel.value)) return toast('Zona ini sudah diisi hari ini — pilih zona lain', true); const answers = readTri(items); if (!answers) return toast('Semua item harus dijawab', true); if (!f1.dataset.value) return toast('Foto 1 wajib', true); const salahK = kk.cek(); if (salahK) return toast(salahK, true); btn.disabled = true;
-      try { const r1 = await api('submitDailyChecklist', Object.assign({ zona_id: zsel.value, items: answers, foto1: f1.dataset.value, foto2: f2.dataset.value || '' }, kk.data())); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Checklist terkirim'); go('checklist'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
+      try { const r1 = await api('submitDailyChecklist', Object.assign({ zona_id: zsel.value, items: answers, foto1: f1.dataset.value, foto2: f2.dataset.value || '' }, kk.data(), geo ? { gps_lat: geo.lat, gps_lng: geo.lng, gps_akurasi: geo.akurasi } : {})); toast(r1 && r1.queued ? 'Tersimpan di HP (tanpa sinyal) · dikirim otomatis saat ada sinyal' : 'Checklist terkirim'); go('checklist'); } catch (e) { toast(e.message, true); btn.disabled = false; } });
   };
   function triItem(q, drainOn, rk) { const na = drainOn && q.terkait_drain === 'Y'; let ex = null; const tri = el('div', { class: 'tri' }, ...['Ya', 'Cukup', 'Tidak'].map(v => el('button', { type: 'button', disabled: na ? '' : null, onclick: e => { tri.querySelectorAll('button').forEach(b => b.classList.remove('active')); e.target.classList.add('active'); tri.dataset.v = v; if (ex) ex.set(v); } }, v)));
     if (na) tri.dataset.v = 'NA'; const row = el('div', { class: 'check-item' + (na ? ' na' : '') + (rk ? ' has-rk' : ''), 'data-q': q.id }, el('span', {}, q.teks_pertanyaan, na ? el('em', {}, 'N/A — kondisi khusus (drain / perbaikan)') : null), tri);
@@ -1382,6 +1403,8 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
   /** v1.14: verifikasi = cross-checklist — Organik menjawab item yang sama; skor Organik yang dipakai HQI. "Tolak" hanya untuk isian tidak sah. */
   async function verificationQueue(c) {
     const rows = await api('listPendingVerification', {}); const list = el('div', { class: 'list' }); const canVerify = S.user.role === 'KaryawanOrganik' || S.user.role === 'SuperAdmin';
+    /* v1.23: posisi saya (sekali) untuk keterangan jarak di tiap kartu; peta per kartu dibuat saat kartu terlihat */
+    const kartu = [];
     c.replaceChildren(el('div', { class: 'greeting' }, el('h2', {}, 'Verifikasi Checklist'), el('p', {}, rows.length + ' menunggu · wajib hari yang sama · jawab ulang tiap item (cross-checklist); skor Anda yang dipakai')), rows.length ? list : el('p', { class: 'empty' }, 'Tidak ada antrean'));
     rows.forEach(r => { const items = JSON.parse(r.item_checklist || '[]'); const drainOn = r.sedang_drain === 'Y'; const box = el('div');
       const qOf = it => S.boot.questions.find(q => String(q.id) === String(it.question_id)) || { id: it.question_id, teks_pertanyaan: it.item, terkait_drain: it.hasil === 'NA' ? 'Y' : 'N' };
@@ -1392,10 +1415,35 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         el('div', { class: 'camera-row', id: 'ph-' + r.id }), canVerify ? el('p', { class: 'hint' }, 'Cross-checklist Anda (jawaban Tidak wajib menyebut area & foto — otomatis jadi temuan untuk rekanan):') : null, canVerify ? box : el('div', { class: 'hint' }, items.map(i => i.item + ': ' + i.hasil).join(' · ')),
         canVerify ? el('p', { class: 'hint' }, 'Foto verifikasi (wajib, dari kamera):') : null, canVerify ? el('div', { class: 'camera-row' }, vf) : null,
         canVerify ? el('div', { class: 'form-row' }, el('button', { class: 'btn primary', onclick: () => verify(r, box, vf) }, 'Simpan verifikasi (pakai skor saya)'), el('button', { class: 'btn danger', onclick: () => tolak(r, vf) }, 'Tolak (isian tidak sah)')) : null);
-      list.append(card); [r.foto1, r.foto2].filter(Boolean).forEach(id => photoImg(id).then(i => { if (i.src) { i.style.cssText = 'width:48%;border-radius:12px'; card.querySelector('#ph-' + r.id).append(i); } })); });
+      const lok = lokasiZona(r); card.querySelector('h3').after(lok.box); list.append(card); kartu.push(lok);
+      [r.foto1, r.foto2].filter(Boolean).forEach(id => photoImg(id).then(i => { if (i.src) { i.style.cssText = 'width:48%;border-radius:12px'; card.querySelector('#ph-' + r.id).append(i); } })); });
+    if (rows.length) geoNow().then(g => { if (g) kartu.forEach(x => x.setPos(g)); });
     async function verify(r, box, vf) { const answers = readTri(box); if (!answers) return toast('Jawab semua item cross-checklist dulu', true); const salahR = cekRekom(box); if (salahR) return toast(salahR, true); if (!vf || !vf.dataset.value) return toast('Foto verifikasi wajib — tap kotak kamera untuk memotret kondisi zona', true); try { const res = await api('verifyDailyChecklist', { id: r.id, setujui: true, items: answers, foto: vf.dataset.value, rekom: 1 }); const nT = jmlTemuan(res.item_verifikasi); toast('Terverifikasi · skor Mandor ' + nz(r.skor) + ' → skor Anda ' + nz(res.skor) + (res.is_anomali === 'Y' ? ' (selisih besar: ditandai anomali)' : '') + (nT ? ' · ' + nT + ' temuan dibuat' : '')); go('checklist'); } catch (e) { toast(e.message, true); } }
     async function tolak(r, vf) { if (!await confirmModal('Tolak checklist ' + zonaName(r.zona_id) + '?\nGunakan hanya bila isian/foto tidak sah. Entri ditolak tidak dihitung dan tidak menambah kepatuhan.')) return; try { await api('verifyDailyChecklist', { id: r.id, setujui: false, foto: vf && vf.dataset.value ? vf.dataset.value : undefined }); toast('Ditolak'); go('checklist'); } catch (e) { toast(e.message, true); } }
   }
+
+  /**
+   * v1.23: kotak lokasi di kartu verifikasi — deskripsi zona, peta mini (polygon zona disorot, pin lokasi foto Mandor bila ada geotag, titik biru posisi saya),
+   * keterangan jarak/arah. Peta dibuat saat kartu terlihat (IntersectionObserver) agar antrean panjang tetap ringan.
+   * Pin Mandor di luar zona hanya diberi tanda informasi (keputusan Rudy: tidak menolak).
+   */
+  function lokasiZona(r) { const z = S.boot.zones.find(x => String(x.id) === String(r.zona_id)) || {}; const pusat = zonaTengah(z); const poly = Array.isArray(z.polygon) && z.polygon.length > 2 ? z.polygon : null;
+    const mandor = r.gps_lat !== '' && r.gps_lat != null && isFinite(+r.gps_lat) && isFinite(+r.gps_lng) ? { lat: +r.gps_lat, lng: +r.gps_lng } : null; const tujuan = pusat || mandor;
+    const ket = el('p', { class: 'hint lok-ket' }); const mapBox = (poly || mandor) ? el('div', { class: 'map map-mini' }) : null; let map = null, dot = null, pos = null;
+    const tulis = () => { if (!pos) { ket.textContent = poly ? 'Zona disorot oranye di peta' + (mandor ? ' · pin = lokasi foto Mandor' : '') + '.' : 'Zona ini belum punya batas di peta — hubungi Admin.'; return; }
+      if (poly && pointInPolygon(pos, poly)) { ket.textContent = 'Anda berada di zona ini' + (mandor ? ' · pin = lokasi foto Mandor' : '') + '.'; return; }
+      if (!tujuan) { ket.textContent = 'Zona ini belum punya batas di peta — hubungi Admin.'; return; } const d = jarakArah(pos, tujuan); ket.textContent = (pusat ? 'Zona ini' : 'Lokasi foto Mandor') + ' ±' + fmtJarak(d.m) + ' arah ' + d.arah + ' dari posisi Anda.' + (poly ? '' : ' Zona ini belum punya batas di peta — arah memakai lokasi foto Mandor.'); };
+    const pasangDot = () => { if (!map || !pos) return; if (dot) dot.setLatLng([pos.lat, pos.lng]); else dot = L.circleMarker([pos.lat, pos.lng], { radius: 7, color: '#fff', fillColor: '#3B82F6', fillOpacity: 1, weight: 2 }).addTo(map).bindTooltip('Posisi Anda'); };
+    const buat = () => loadMaps().then(() => { if (map) return; map = newMap(mapBox, { layerControl: false }); const b = [];
+      if (poly) { const pl = L.polygon(poly.map(toLL), { color: '#FFB020', fillColor: '#FF7A1A', fillOpacity: .35, weight: 3 }).addTo(map); pl.bindTooltip(esc(z.nama_area || ''), { permanent: true, direction: 'center', className: 'zone-label' }); b.push(...poly.map(toLL)); }
+      if (mandor) { L.marker([mandor.lat, mandor.lng], { icon: PIN_ICON(), title: 'Lokasi foto Mandor' }).addTo(map).bindTooltip('Lokasi foto Mandor' + (r.gps_akurasi ? ' (±' + r.gps_akurasi + ' m)' : '')); b.push([mandor.lat, mandor.lng]); }
+      if (b.length) map.fitBounds(L.latLngBounds(b), { padding: [24, 24], maxZoom: 19 }); pasangDot(); }).catch(e => mapError(mapBox, e.message));
+    if (mapBox) { if ('IntersectionObserver' in window) { const io = new IntersectionObserver(en => { if (en.some(x => x.isIntersecting)) { io.disconnect(); buat(); } }, { rootMargin: '200px' }); io.observe(mapBox); } else buat(); }
+    tulis();
+    const box = el('div', { class: 'lok' }, z.deskripsi ? el('p', { class: 'lok-desk' }, el('b', {}, 'Lokasi: '), z.deskripsi) : null, mapBox, ket,
+      r.gps_luar_zona === 'Y' ? el('p', { class: 'hint warn-text' }, 'Catatan: GPS HP Mandor saat mengirim berada di luar batas zona (informasi — GPS di area pabrik bisa meleset).') : null,
+      !mandor ? el('p', { class: 'hint' }, 'Lokasi foto Mandor tidak tercatat (GPS HP Mandor mati/ditolak, atau checklist dikirim sebelum v1.23).') : null);
+    return { box, setPos: g => { pos = g; tulis(); pasangDot(); } }; }
 
   // ================= v1.17.1: RIWAYAT (Spot-Check & Checklist) + KEPATUHAN (Checklist) — permintaan Rudy 19 Okt 2026
   /** Bilah tab sub-menu: tab pertama = isi bawaan menu (tanpa arg), tab lain lewat go(view, { tab }). */
@@ -1434,7 +1482,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
     const rkNote = it => { const k = rkOf(it); return k.catatan || k.temuan_id ? el('em', {}, (k.catatan ? 'Perlu dibersihkan: ' + k.catatan : '') + (k.temuan_id ? (k.catatan ? ' · ' : '') + (k.temuan_lama === 'Y' ? 'temuan sudah ada' : 'jadi temuan') : '')) : null; };
     const ph = el('div', { class: 'camera-row' }); const phv = el('div', { class: 'camera-row' });   // v1.17.6: foto pemverifikasi terpisah
     modal(el('div', { class: 'form' }, el('div', { class: 'section-head' }, el('h3', {}, (isSpot ? 'Spot-check' : 'Checklist') + ' · ' + zonaName(x.zona_id)), el('a', { class: 'link', onclick: closeModal }, 'Tutup')),
-      el('p', { class: 'hint' }, fmtDT(x.timestamp) + ' · ' + x.vendor + ' · ' + (isSpot ? 'oleh ' : 'Mandor ') + x.oleh + kondisiTeks(x)),
+      el('p', { class: 'hint' }, fmtDT(x.timestamp) + ' · ' + x.vendor + ' · ' + (isSpot ? 'oleh ' : 'Mandor ') + x.oleh + kondisiTeks(x) + (!isSpot && x.gps_lat !== '' && x.gps_lat != null ? ' · lokasi foto tercatat' + (x.gps_luar_zona === 'Y' ? ' (di luar batas zona)' : '') : '')),
       isSpot ? el('p', {}, 'Skor ', scorePill(x.skor)) : el('p', {}, 'Skor Mandor ', el('b', {}, nz(x.skor_mandor)), ...(x.verifikator ? [' · skor verifikasi ', el('b', {}, nz(x.skor)), ' oleh ' + x.verifikator + (x.verified_at ? ' (' + fmtDT(x.verified_at) + ')' : '')] : []), ' ', ckPill(x)),
       x.is_anomali === 'Y' ? el('p', { class: 'hint warn-text' }, 'Anomali: selisih skor Mandor vs verifikasi melebihi ambang' + (x.status_review_anomali ? ' · review: ' + x.status_review_anomali : '')) : null,
       items.length ? el('div', { class: 'tbl-wrap' }, el('table', { class: 'tbl' }, el('tr', {}, el('th', {}, 'Item'), el('th', {}, isSpot ? 'Jawaban' : 'Mandor'), isSpot ? null : el('th', {}, 'Verifikasi')),
@@ -1531,7 +1579,7 @@ html[data-theme="light"]{--logo-op:url("data:image/png;base64,iVBORw0KGgoAAAANSU
         ul('Temuan berulang (kategori & zona sama dalam 30 hari): pengurang ×1,5 untuk pengulangan pertama, ×2 untuk pengulangan berikutnya.', 'Kategori Debu/Residu Proses tidak dikenai pengali berulang (kemunculan berulang dianggap wajar di pabrik kimia).', 'Temuan dalam jendela aktivitas operasional terjadwal (mis. drain) tidak mengurangi skor temuan; hanya dinilai lewat SLA khusus jadwal tersebut.', 'Skor tidak bisa di bawah 0.'),
         contoh('Vendor X bulan ini punya 3 temuan: (a) Sampah, Rendah → 1 poin; (b) Ceceran, Sedang → 3 poin; (c) Genangan, Tinggi, dan ini pengulangan pertama di zona & kategori yang sama dalam 30 hari → 5 × 1,5 = 7,5 poin.', el('br'), 'Total pengurang = 1 + 3 + 7,5 = 11,5 → ', kode('Skor Temuan = 100 − 11,5 = ' + exTemuan))),
       sec('3. Skor SLA (kecepatan penyelesaian)',
-        p('Setiap temuan punya target waktu sesuai prioritas (tabel di atas) ditambah toleransi ' + fmtMin(cfg.buffer_menit) + '. Waktu dihitung dari status Open sampai Close, hanya pada jam kerja efektif pabrik (bukan jam kalender), sehingga waktu di luar shift tidak dihitung terlambat.'),
+        p('Setiap temuan punya target waktu sesuai prioritas (tabel di atas) ditambah toleransi ' + fmtMin(cfg.buffer_menit) + '. Waktu dihitung dari status Open sampai Close, hanya pada jam kerja efektif pabrik (bukan jam kalender), Senin–Jumat — waktu di luar shift serta Sabtu dan Minggu tidak dihitung terlambat.'),
         p('Skor SLA = (Σ bobot prioritas temuan yang selesai tepat waktu ÷ Σ bobot prioritas semua temuan yang dinilai) × 100. Temuan yang masih Open tetapi sudah melewati target dihitung terlambat.'),
         ul('Tambahan waktu: bila pekerjaan tidak bisa selesai tepat waktu, Mandor mengajukan SEBELUM batas SLA lewat dengan alasan wajib; setelah disetujui pelapor (atau Karyawan Organik lingkup bila pelapornya rekanan) / Admin lingkup, target memakai estimasi yang disetujui. Jumlah tambahan waktu tercatat di laporan.', 'Temuan Prioritas Tinggi/Mendesak yang belum ditangani lebih dari 2× target tampil di kartu Beranda Admin & Manajemen (peringatan dini, bukan pengurang skor).', 'Time to Acknowledge (Open → In Progress) hanya metrik dashboard, tidak masuk HQI.'),
         contoh('Tiga temuan yang sama: (a) Rendah, bobot 1, selesai dalam ' + fmtMin(Math.round(tR / 2)) + ' jam kerja → target ' + fmtMin(tR) + ' + ' + fmtMin(buf) + ' → tepat; (b) Sedang, bobot 3, selesai ' + fmtMin(slaOf('Sedang') + buf + 30) + ' → lewat target ' + fmtMin(slaOf('Sedang')) + ' + ' + fmtMin(buf) + ' → terlambat; (c) Tinggi, bobot 5, selesai ' + fmtMin(Math.max(1, tT - 10)) + ' → tepat. (Bila ada temuan Mendesak, targetnya ' + fmtMin(tM) + ', bobot 10.)', el('br'),
