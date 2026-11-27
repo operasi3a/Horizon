@@ -121,12 +121,12 @@
 <script>
   window.HORIZON_CONFIG = {
     MAP_CENTER: { lat: -7.1568, lng: 112.6428 },
-    MAP_ZOOM: 17, PHOTO_MAX_SIDE: 1280, PHOTO_QUALITY: 0.72, // peta: Leaflet + tile OSM/Esri (tanpa API key)
+    MAP_ZOOM: 17, PHOTO_MAX_SIDE: 1024, PHOTO_QUALITY: 0.68, /* v1.25: sebelumnya 1280 / 0.72 — foto ±40% lebih ringan, watermark ikut menyesuaikan lebar */ // peta: Leaflet + tile OSM/Esri (tanpa API key)
     API_URL: 'https://script.google.com/macros/s/AKfycbycFTzOTdiGXMJuTinfE9YYTp-qP5QpWH5JjhJMQLTiEJzcv8dHOxY733-f1UPEZKjO/exec', // v1.11.1: diisi hanya pada frontend mandiri (Cloudflare Pages) → API lewat fetch() ke /exec; kosong = google.script.run
     CAMERA_RELAY_URL: '', // v1.7: URL Kamera.html eksternal (opsional, Script Properties CAMERA_RELAY_URL); kosong = popup blob URL
   };
 </script>
-<script src="/assets/app-07b91ee6be.js"></script>
+<script src="/assets/app-e890121e9e.js"></script>
 <script>window.addEventListener("load",function(){if(!window.__HZ_APP){document.body.innerHTML='<p style="font:16px sans-serif;padding:24px;color:#fff;background:#04070D">Berkas aplikasi belum lengkap atau gagal dimuat. Muat ulang halaman; bila tetap muncul, hubungi Admin (folder assets belum diunggah).</p>';}});</script>
 </body>
 </html>
